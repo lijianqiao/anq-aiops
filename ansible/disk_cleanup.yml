@@ -1,0 +1,42 @@
+---
+- name: Disk cleanup
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  vars:
+    cleanup_path: "{{ path | default('/tmp') }}"
+    min_age: "{{ min_age_days | default(7) }}"
+  tasks:
+    - name: Find old files
+      ansible.builtin.find:
+        paths: "{{ cleanup_path }}"
+        age: "{{ min_age }}d"
+        file_type: file
+      register: old_files
+
+    - name: Show files to delete
+      ansible.builtin.debug:
+        msg: "Would delete {{ old_files.files | length }} files in {{ cleanup_path }}"
+
+    - name: Delete old files
+      ansible.builtin.find:
+        paths: "{{ cleanup_path }}"
+        age: "{{ min_age }}d"
+        file_type: file
+      register: to_delete
+
+    - name: Remove files
+      ansible.builtin.file:
+        path: "{{ item.path }}"
+        state: absent
+      loop: "{{ to_delete.files }}"
+      when: to_delete.files | length > 0
+
+    - name: Check disk usage after cleanup
+      ansible.builtin.shell:
+        cmd: "df --output=pcent {{ cleanup_path }} | tail -1 | tr -d ' %'"
+      register: disk_usage
+      changed_when: false
+
+    - name: Set disk usage fact
+      ansible.builtin.set_fact:
+        disk_usage: "{{ disk_usage.stdout }}"

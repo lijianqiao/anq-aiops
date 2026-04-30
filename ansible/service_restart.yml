@@ -1,0 +1,35 @@
+---
+- name: Service restart
+  hosts: "{{ target_host }}"
+  gather_facts: false
+  vars:
+    svc_name: "{{ service_name }}"
+  tasks:
+    - name: Check current service status
+      ansible.builtin.systemd:
+        name: "{{ svc_name }}"
+      register: svc_before
+      ignore_errors: true
+
+    - name: Show current status
+      ansible.builtin.debug:
+        msg: "Service {{ svc_name }} state: {{ svc_before.status.ActiveState | default('unknown') }}"
+
+    - name: Restart service
+      ansible.builtin.systemd:
+        name: "{{ svc_name }}"
+        state: restarted
+      register: restart_result
+
+    - name: Wait for service to start
+      ansible.builtin.pause:
+        seconds: 3
+
+    - name: Verify service is active
+      ansible.builtin.systemd:
+        name: "{{ svc_name }}"
+      register: svc_after
+
+    - name: Report final status
+      ansible.builtin.debug:
+        msg: "Service {{ svc_name }} state after restart: {{ svc_after.status.ActiveState }}"

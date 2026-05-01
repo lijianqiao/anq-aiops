@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from src.models import Alert, AuditRecord, ExecutionResult, RunbookResult
+from src.models import ActionPlan, Alert, AuditRecord, ExecutionResult, RCAResult, RiskEvaluation, RunbookResult
 
 
 class TestAlert:
@@ -79,3 +79,41 @@ class TestAuditRecord:
         )
         assert record.decision == "approved"
         assert record.execution_result is None
+
+
+def test_rca_result():
+    rca = RCAResult(
+        root_cause="/tmp 目录有大量过期文件",
+        confidence=0.85,
+        recommended_runbook="disk_cleanup",
+        params={"target_host": "192.168.1.12", "target_path": "/tmp"},
+        reasoning="磁盘使用率 95%，/tmp 目录占用最多",
+    )
+    assert rca.confidence == 0.85
+    assert rca.recommended_runbook == "disk_cleanup"
+    json_str = rca.model_dump_json()
+    rca2 = RCAResult.model_validate_json(json_str)
+    assert rca2.root_cause == rca.root_cause
+
+
+def test_action_plan():
+    plan = ActionPlan(
+        runbook_id="disk_cleanup",
+        params={"target_host": "192.168.1.12"},
+        risk_level="low",
+        requires_approval=True,
+        reasoning="磁盘清理为低风险操作",
+    )
+    assert plan.risk_level == "low"
+    assert plan.requires_approval is True
+
+
+def test_risk_evaluation():
+    risk = RiskEvaluation(
+        approved=True,
+        risk_score=0.2,
+        reason="磁盘清理是低风险操作",
+        auto_execute_eligible=True,
+    )
+    assert risk.approved is True
+    assert risk.auto_execute_eligible is True

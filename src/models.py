@@ -48,3 +48,32 @@ class AuditRecord(BaseModel):
     feishu_message_id: str | None
     created_at: datetime
     completed_at: datetime | None
+
+
+class RCAResult(BaseModel):
+    """LLM 根因分析结果"""
+
+    root_cause: str
+    confidence: float
+    recommended_runbook: str
+    params: dict
+    reasoning: str
+
+
+class ActionPlan(BaseModel):
+    """执行计划"""
+
+    runbook_id: str
+    params: dict
+    risk_level: str
+    requires_approval: bool
+    reasoning: str
+
+
+class RiskEvaluation(BaseModel):
+    """风险评估结果"""
+
+    approved: bool
+    risk_score: float
+    reason: str
+    auto_execute_eligible: bool

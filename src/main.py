@@ -3,10 +3,18 @@ from contextlib import asynccontextmanager, suppress
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI
+from temporalio import workflow
 from temporalio.client import Client
+from temporalio.worker import Worker
 
 from src.api.webhook import router as webhook_router
 from src.config import settings
+
+with workflow.unsafe.imports_passed_through():
+    from src.activities.audit import write_audit
+    from src.activities.feishu import send_feishu_alert, send_feishu_result
+    from src.activities.runbook import execute_runbook
+    from src.workflows.alert_workflow import AlertWorkflow
 
 
 @asynccontextmanager
@@ -24,8 +32,17 @@ async def lifespan(app: FastAPI):
 
     consumer_task = asyncio.create_task(start_consumer_loop(app))
 
+    worker = Worker(
+        temporal_client,
+        task_queue=settings.temporal_task_queue,
+        workflows=[AlertWorkflow],
+        activities=[send_feishu_alert, send_feishu_result, execute_runbook, write_audit],
+    )
+    worker_task = asyncio.create_task(worker.run())
+
     yield
 
+    worker_task.cancel()
     consumer_task.cancel()
     await redis_client.aclose()
     await temporal_client.__aexit__(None, None, None)

@@ -1,8 +1,11 @@
 import sys
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
+
+from src.llm.circuit_breaker import CircuitBreaker, CircuitBreakerOpen
 
 
 @pytest.fixture(autouse=True)
@@ -64,3 +67,56 @@ async def test_openai_client_chat_json_timeout():
                 schema=SampleResponse,
                 timeout=1,
             )
+
+
+def test_circuit_breaker_initial_state():
+    cb = CircuitBreaker(threshold=0.5, window_sec=60)
+    assert cb.state == "CLOSED"
+
+
+def test_circuit_breaker_records_failure():
+    cb = CircuitBreaker(threshold=0.5, window_sec=60)
+    cb.record_failure()
+    cb.record_failure()
+    assert cb.state == "CLOSED"
+
+
+def test_circuit_breaker_opens_on_threshold():
+    cb = CircuitBreaker(threshold=0.5, window_sec=60)
+    cb.record_success()
+    cb.record_failure()
+    cb.record_failure()
+    assert cb.state == "OPEN"
+
+
+def test_circuit_breaker_blocks_when_open():
+    cb = CircuitBreaker(threshold=0.5, window_sec=60)
+    cb.record_success()
+    cb.record_failure()
+    cb.record_failure()
+    assert cb.state == "OPEN"
+    with pytest.raises(CircuitBreakerOpen):
+        cb.check()
+
+
+def test_circuit_breaker_half_open_after_window():
+    cb = CircuitBreaker(threshold=0.5, window_sec=1)
+    cb.record_success()
+    cb.record_failure()
+    cb.record_failure()
+    assert cb.state == "OPEN"
+    time.sleep(1.1)
+    cb.check()
+    assert cb.state == "HALF_OPEN"
+
+
+def test_circuit_breaker_resets_on_success():
+    cb = CircuitBreaker(threshold=0.5, window_sec=1)
+    cb.record_success()
+    cb.record_failure()
+    cb.record_failure()
+    assert cb.state == "OPEN"
+    time.sleep(1.1)
+    cb.check()
+    cb.record_success()
+    assert cb.state == "CLOSED"

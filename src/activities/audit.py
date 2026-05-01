@@ -1,5 +1,5 @@
+import datetime as dt  # noqa: UP017
 import json
-from datetime import datetime
 
 from temporalio import activity
 
@@ -28,8 +28,8 @@ async def write_audit(
         runbook_params=runbook_params,
         execution_result=execution_result,
         feishu_message_id=feishu_message_id,
-        created_at=datetime.now(datetime.UTC),
-        completed_at=datetime.now(datetime.UTC),
+        created_at=dt.datetime.now(dt.UTC),
+        completed_at=dt.datetime.now(dt.UTC),
     )
     # Phase 1: 先写日志，后续接 PostgreSQL
     print(f"[AUDIT] {record.alert.event_id} | {record.decision} | {record.runbook_id}")

@@ -1,7 +1,7 @@
 [project]
 name = "aiops"
 version = "0.1.0"
-description = "AIOps Phase 1: 告警→飞书→审批→Runbook执行"
+description = "AIOps Phase 2: 告警→LLM分析→飞书→审批→Runbook执行"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
@@ -13,6 +13,8 @@ dependencies = [
     "pydantic>=2.13.3",
     "pydantic-settings>=2.14",
     "ansible-runner>=2.4.3",
+    "openai>=1.0",
+    "anthropic>=0.40",
 ]
 
 [project.optional-dependencies]

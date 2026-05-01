@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager, suppress
 
 import redis.asyncio as aioredis
@@ -19,8 +20,13 @@ async def lifespan(app: FastAPI):
     with suppress(aioredis.exceptions.ResponseError):
         await redis_client.xgroup_create("aiops:alerts", "aiops-workers", id="0", mkstream=True)
 
+    from src.bus.consumer import start_consumer_loop
+
+    consumer_task = asyncio.create_task(start_consumer_loop(app))
+
     yield
 
+    consumer_task.cancel()
     await redis_client.aclose()
     await temporal_client.__aexit__(None, None, None)
 

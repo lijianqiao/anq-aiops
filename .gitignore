@@ -8,6 +8,13 @@ wheels/
 
 # Virtual environments
 .venv
+.env
 
-# 实施方案
+# cache
+.cache/
+.pytest_cache/
+.ruff_cache/
+
+# 方案
 *实施方案.md
+superpowers/

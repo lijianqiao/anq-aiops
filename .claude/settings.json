@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__plugin_context-mode_context-mode__ctx_batch_execute",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "mcp__plugin_context7_context7__resolve-library-id",
+      "mcp__plugin_context7_context7__query-docs",
+      "Read(//d/project/aiops/**)",
+      "Read(//c/Users/lijia/.claude/plugins/cache/claude-plugins-official/superpowers/5.0.7/skills/subagent-driven-development/**)",
+      "Bash(.venv/Scripts/python -m pytest tests/test_models.py -v)",
+      "Bash(.venv/Scripts/ruff check *)"
+    ]
+  }
+}

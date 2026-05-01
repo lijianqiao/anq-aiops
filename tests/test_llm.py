@@ -6,6 +6,7 @@ import pytest
 from pydantic import BaseModel
 
 from src.llm.circuit_breaker import CircuitBreaker, CircuitBreakerOpen
+from src.llm.router import LLMRouter, LLMUnavailable
 
 
 @pytest.fixture(autouse=True)
@@ -120,3 +121,78 @@ def test_circuit_breaker_resets_on_success():
     cb.check()
     cb.record_success()
     assert cb.state == "CLOSED"
+
+
+@pytest.mark.asyncio
+async def test_router_uses_primary():
+    primary = AsyncMock(spec=LLMClient)
+    primary.chat_json.return_value = SampleResponse(answer="ok", score=0.9)
+    fallback = AsyncMock(spec=LLMClient)
+
+    router = LLMRouter(primary=primary, fallback=fallback)
+    result = await router.invoke("test", SampleResponse)
+
+    assert result.answer == "ok"
+    primary.chat_json.assert_called_once()
+    fallback.chat_json.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_router_falls_back_on_primary_failure():
+    primary = AsyncMock(spec=LLMClient)
+    primary.chat_json.side_effect = TimeoutError("timeout")
+    fallback = AsyncMock(spec=LLMClient)
+    fallback.chat_json.return_value = SampleResponse(answer="fallback", score=0.5)
+
+    router = LLMRouter(primary=primary, fallback=fallback)
+    result = await router.invoke("test", SampleResponse)
+
+    assert result.answer == "fallback"
+    primary.chat_json.assert_called_once()
+    fallback.chat_json.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_router_raises_when_both_fail():
+    primary = AsyncMock(spec=LLMClient)
+    primary.chat_json.side_effect = TimeoutError("timeout")
+    fallback = AsyncMock(spec=LLMClient)
+    fallback.chat_json.side_effect = RuntimeError("error")
+
+    router = LLMRouter(primary=primary, fallback=fallback)
+
+    with pytest.raises(LLMUnavailable):
+        await router.invoke("test", SampleResponse)
+
+
+@pytest.mark.asyncio
+async def test_router_uses_primary_model_override():
+    primary = AsyncMock(spec=LLMClient)
+    primary.chat_json.return_value = SampleResponse(answer="ok", score=0.9)
+    fallback = AsyncMock(spec=LLMClient)
+
+    router = LLMRouter(primary=primary, fallback=fallback)
+    await router.invoke("test", SampleResponse, primary_model="gpt-4o")
+
+    call_kwargs = primary.chat_json.call_args.kwargs
+    assert call_kwargs["model"] == "gpt-4o"
+
+
+@pytest.mark.asyncio
+async def test_router_skips_primary_when_circuit_open():
+    primary = AsyncMock(spec=LLMClient)
+    fallback = AsyncMock(spec=LLMClient)
+    fallback.chat_json.return_value = SampleResponse(answer="fallback", score=0.5)
+
+    cb = CircuitBreaker(threshold=0.5, window_sec=60)
+    cb.record_success()
+    cb.record_failure()
+    cb.record_failure()
+    assert cb.state == "OPEN"
+
+    router = LLMRouter(primary=primary, fallback=fallback, circuit_breaker=cb)
+    result = await router.invoke("test", SampleResponse)
+
+    assert result.answer == "fallback"
+    primary.chat_json.assert_not_called()
+    fallback.chat_json.assert_called_once()

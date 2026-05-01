@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager, suppress
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI
+from redis.exceptions import ResponseError
 from temporalio import workflow
 from temporalio.client import Client
 from temporalio.worker import Worker
@@ -25,7 +26,7 @@ async def lifespan(app: FastAPI):
     temporal_client = await Client.connect(settings.temporal_address)
     app.state.temporal = temporal_client
 
-    with suppress(aioredis.exceptions.ResponseError):
+    with suppress(ResponseError):
         await redis_client.xgroup_create("aiops:alerts", "aiops-workers", id="0", mkstream=True)
 
     from src.bus.consumer import start_consumer_loop

@@ -12,6 +12,22 @@ class Settings(BaseSettings):
     ansible_private_data_dir: str = "./ansible"
     ansible_inventory: str = "./ansible/inventory.ini"
 
+    # LLM - Primary
+    llm_primary_provider: str = "openai"
+    llm_primary_base_url: str = "https://api.openai.com/v1"
+    llm_primary_api_key: str = ""
+    llm_primary_model: str = "gpt-4o"
+
+    # LLM - Fallback
+    llm_fallback_provider: str = "openai"
+    llm_fallback_base_url: str = "http://localhost:8080/v1"
+    llm_fallback_api_key: str = "not-needed"
+    llm_fallback_model: str = "local-model"
+
+    # LLM - General
+    llm_timeout: float = 30
+    llm_circuit_breaker_threshold: float = 0.3
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

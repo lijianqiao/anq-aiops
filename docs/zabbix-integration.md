@@ -18,7 +18,7 @@
 
 ```bash
 # 在 VM2 (Zabbix Server) 上测试 AIOps API 是否可达
-curl -s http://<VM1_IP>:8000/health
+curl -s http://192.168.198.128:8000/health
 # 期望返回: {"status": "ok"}
 ```
 
@@ -39,7 +39,7 @@ curl -s http://<VM1_IP>:8000/health
 
 ### 2.1 创建 Webhook Media Type
 
-1. 打开 Zabbix Web：`http://<VM2_IP>/zabbix`
+1. 打开 Zabbix Web：`http://192.168.198.129/zabbix`
 2. 导航：**Alerts → Media types → Create media type**
 3. 填写：
 
@@ -55,7 +55,7 @@ curl -s http://<VM1_IP>:8000/health
 
 | Name | Value | 说明 |
 |------|-------|------|
-| `aiops_url` | `http://<VM1-IP>:8000/webhook/zabbix` | AIOps webhook 完整地址，把 IP 换成 VM1 的实际地址 |
+| `aiops_url` | `http://192.168.198.128:8000/webhook/zabbix` | AIOps webhook 完整地址，把 IP 换成 VM1 的实际地址 |
 | `aiops_token` | `change-me` | 必须与 AIOps 的 `.env` 中 `ZABBIX_WEBHOOK_TOKEN` 保持一致 |
 | `event_id` | `{EVENT.ID}` | |
 | `event_name` | `{EVENT.NAME}` | |
@@ -159,7 +159,7 @@ Zabbix 7.0 支持在 Web 界面直接测试 Webhook：
 
 | 参数 | 测试值 |
 |------|--------|
-| aiops_url | `http://192.168.1.10:8000/webhook/zabbix` |
+| aiops_url | `http://192.168.198.128:8000/webhook/zabbix` |
 | aiops_token | `change-me`（与 .env 中 `ZABBIX_WEBHOOK_TOKEN` 一致） |
 | event_id | `99999` |
 | event_name | `Test alert from Zabbix` |
@@ -167,7 +167,7 @@ Zabbix 7.0 支持在 Web 界面直接测试 Webhook：
 | event_value | `1` |
 | timestamp_unix | `1746460800` |
 | hostname | `aiops-target` |
-| host_ip | `192.168.1.12` |
+| host_ip | `192.168.198.130` |
 | trigger_id | `99999` |
 | message | `This is a test alert` |
 
@@ -223,7 +223,7 @@ Zabbix 7.0 支持在 Web 界面直接测试 Webhook：
 ### 4.1 告警接收接口
 
 ```
-POST http://<VM1_IP>:8000/webhook/zabbix
+POST http://192.168.198.128:8000/webhook/zabbix
 Content-Type: application/json
 ```
 
@@ -235,7 +235,7 @@ Content-Type: application/json
     "event_name": "Disk usage > 90%",
     "severity": "high",
     "hostname": "aiops-target",
-    "host_ip": "192.168.1.12",
+    "host_ip": "192.168.198.130",
     "trigger_id": "10001",
     "message": "Disk usage is 95% on /tmp",
     "timestamp": "2026-05-01T10:00:00Z",
@@ -306,7 +306,7 @@ curl -X POST http://localhost:8000/webhook/zabbix \
     "event_name": "Disk usage > 90%",
     "severity": "high",
     "hostname": "aiops-target",
-    "host_ip": "192.168.1.12",
+    "host_ip": "192.168.198.130",
     "trigger_id": "10001",
     "message": "Disk usage is 95% on /tmp",
     "timestamp": "2026-05-05T10:00:00Z",
@@ -325,7 +325,7 @@ curl -X POST http://localhost:8000/webhook/zabbix \
     "event_name": "nginx process is not running",
     "severity": "high",
     "hostname": "aiops-target",
-    "host_ip": "192.168.1.12",
+    "host_ip": "192.168.198.130",
     "trigger_id": "10002",
     "message": "nginx service is down on aiops-target",
     "timestamp": "2026-05-05T10:05:00Z",
@@ -344,7 +344,7 @@ curl -X POST http://localhost:8000/webhook/zabbix \
     "event_name": "AD Domain Controller service is down",
     "severity": "disaster",
     "hostname": "aiops-windc",
-    "host_ip": "192.168.1.13",
+    "host_ip": "192.168.198.132",
     "trigger_id": "20001",
     "message": "NTDS service is not running on aiops-windc",
     "timestamp": "2026-05-05T10:10:00Z",
@@ -364,7 +364,7 @@ docker compose -f /opt/aiops/docker-compose.yml logs aiops --tail 20
 docker compose -f /opt/aiops/docker-compose.yml exec redis redis-cli XLEN aiops:alerts
 
 # 3. 检查 Temporal UI
-# 浏览器打开 http://<VM1_IP>:8080 查看 workflow 列表
+# 浏览器打开 http://192.168.198.128:8080 查看 workflow 列表
 
 # 4. 检查飞书是否收到消息
 ```
@@ -674,7 +674,7 @@ cd /opt/aiops && docker compose up -d --build aiops
 curl -X POST http://localhost:8000/webhook/zabbix \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(grep ^ZABBIX_WEBHOOK_TOKEN /opt/aiops/.env | cut -d= -f2)" \
-  -d '{"event_id":"test-degrade","event_name":"Disk usage > 90%","severity":"high","hostname":"aiops-target","host_ip":"192.168.1.12","trigger_id":"10001","message":"Disk full","timestamp":"2026-05-05T10:00:00Z","status":"problem"}'
+  -d '{"event_id":"test-degrade","event_name":"Disk usage > 90%","severity":"high","hostname":"aiops-target","host_ip":"192.168.198.130","trigger_id":"10001","message":"Disk full","timestamp":"2026-05-05T10:00:00Z","status":"problem"}'
 
 # 步骤 4: 飞书应收到告警卡片，但没有 AI 分析区块（降级模式）
 
@@ -689,7 +689,7 @@ curl -X POST http://localhost:8000/webhook/zabbix \
 
 ```bash
 # 1. 检查 AIOps 是否可达
-curl -v http://<VM1_IP>:8000/health
+curl -v http://192.168.198.128:8000/health
 
 # 2. 检查 VM1 防火墙
 ufw status
@@ -734,7 +734,7 @@ curl -X POST "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=ch
 ### Temporal Workflow 卡住
 
 ```bash
-# 查看 Temporal UI: http://<VM1_IP>:8080
+# 查看 Temporal UI: http://192.168.198.128:8080
 # 检查 workflow 状态，是否有 pending activity
 
 # 查看 AIOps 日志

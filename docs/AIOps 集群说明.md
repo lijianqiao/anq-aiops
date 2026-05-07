@@ -6,12 +6,12 @@
 
 ## 集群规划
 
-| 主机  | OS                  | 角色                          | 默认主机名         |
-| --- | ------------------- | --------------------------- | ------------- |
-| VM1 | Ubuntu 24.04 LTS    | AIOps 核心节点                  | aiops-core    |
-| VM2 | Ubuntu 24.04 LTS    | Zabbix + Grafana            | aiops-monitor |
-| VM3 | Ubuntu 24.04 LTS    | 被监控目标                       | aiops-target  |
-| VM4 | Windows Server 2025 | AD/DHCP（仅供监控）+ Zabbix Agent | aiops-windc   |
+| 主机 | OS                  | 角色                              | 默认主机名    | IP              |
+| ---- | ------------------- | --------------------------------- | ------------- | --------------- |
+| VM1  | Ubuntu 24.04 LTS    | AIOps 核心节点                    | aiops-core    | 192.168.198.128 |
+| VM2  | Ubuntu 24.04 LTS    | Zabbix + Grafana                  | aiops-monitor | 192.168.198.129 |
+| VM3  | Ubuntu 24.04 LTS    | 被监控目标                        | aiops-target  | 192.168.198.130 |
+| VM4  | Windows Server 2025 | AD/DHCP（仅供监控）+ Zabbix Agent | aiops-windc   | 192.168.198.132 |
 
 > **AIOps 不管理 Windows 机器**：VM4 仅作为被 Zabbix 监控的对象，不参与 Ansible 控制。
 
@@ -57,10 +57,10 @@ README.md                    # 本文件
 ```bash
 # 1. 修改脚本顶部的 IP（按你的实际 IP）
 sudo vim setup-common.sh
-# VM1_IP="192.168.1.10"
-# VM2_IP="192.168.1.11"
-# VM3_IP="192.168.1.12"
-# VM4_IP="192.168.1.13"
+# VM1_IP="192.168.198.128"
+# VM2_IP="192.168.198.129"
+# VM3_IP="192.168.198.130"
+# VM4_IP="192.168.198.132"
 
 # 2. 一键执行（中途会让你选当前 VM 的角色）
 sudo bash setup-common.sh --all

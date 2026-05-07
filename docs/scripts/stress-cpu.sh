@@ -8,7 +8,7 @@ DURATION=${2:-120}
 # 安装 stress-ng（如果没有）
 if ! command -v stress-ng &> /dev/null; then
     echo "[*] 安装 stress-ng..."
-    apt-get install -y stress-ng > /dev/null 2>&1
+    sudo apt-get install -y stress-ng > /dev/null 2>&1
 fi
 
 echo "[*] 启动 CPU 压力测试: ${CORES} 核心, 持续 ${DURATION} 秒"

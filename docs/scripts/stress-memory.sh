@@ -7,7 +7,7 @@ DURATION=${2:-120}
 
 if ! command -v stress-ng &> /dev/null; then
     echo "[*] 安装 stress-ng..."
-    apt-get install -y stress-ng > /dev/null 2>&1
+    sudo apt-get install -y stress-ng > /dev/null 2>&1
 fi
 
 echo "[*] 启动内存压力测试: ${SIZE}MB, 持续 ${DURATION} 秒"

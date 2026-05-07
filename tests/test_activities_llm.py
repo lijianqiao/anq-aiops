@@ -1,8 +1,12 @@
-from unittest.mock import AsyncMock, patch
+"""ReAct agent_diagnose activity 测试"""
+
+import json
+from unittest.mock import patch
 
 import pytest
 
-from src.models import ActionPlan, Alert, RCAResult, RiskEvaluation
+from src.llm.agent import AgentResult
+from src.models import ActionPlan, Alert
 
 
 def _alert_json() -> str:
@@ -10,8 +14,8 @@ def _alert_json() -> str:
         event_id="12345",
         event_name="Disk usage > 90%",
         severity="high",
-        hostname="web-server-01",
-        host_ip="192.168.1.13",
+        hostname="aiops-target",
+        host_ip="192.168.198.130",
         trigger_id="10001",
         message="Disk usage is 95% on /tmp",
         timestamp="2026-04-30T14:30:00Z",
@@ -21,79 +25,66 @@ def _alert_json() -> str:
 
 
 @pytest.mark.asyncio
-async def test_rca_analyze():
-    from src.activities.llm import rca_analyze
-
-    rca = RCAResult(
-        root_cause="/tmp 满了",
-        confidence=0.9,
-        recommended_runbook="disk_cleanup",
-        params={"target_host": "192.168.1.13"},
-        reasoning="磁盘 95%",
-    )
-    mock_router = AsyncMock()
-    mock_router.invoke.return_value = rca
-
-    with patch("src.activities.llm.llm_router", mock_router):
-        result_json = await rca_analyze(_alert_json())
-        result = RCAResult.model_validate_json(result_json)
-
-    assert result.root_cause == "/tmp 满了"
-    assert result.recommended_runbook == "disk_cleanup"
-
-
-@pytest.mark.asyncio
-async def test_plan_action():
-    from src.activities.llm import plan_action
-
-    rca = RCAResult(
-        root_cause="/tmp 满了",
-        confidence=0.9,
-        recommended_runbook="disk_cleanup",
-        params={"target_host": "192.168.1.13"},
-        reasoning="磁盘 95%",
-    )
-    plan = ActionPlan(
-        runbook_id="disk_cleanup",
-        params={"target_host": "192.168.1.13"},
-        risk_level="low",
-        requires_approval=True,
-        reasoning="低风险",
-    )
-    mock_router = AsyncMock()
-    mock_router.invoke.return_value = plan
-
-    with patch("src.activities.llm.llm_router", mock_router):
-        result_json = await plan_action(_alert_json(), rca.model_dump_json())
-        result = ActionPlan.model_validate_json(result_json)
-
-    assert result.runbook_id == "disk_cleanup"
-    assert result.risk_level == "low"
-
-
-@pytest.mark.asyncio
-async def test_evaluate_risk():
-    from src.activities.llm import evaluate_risk
+async def test_agent_diagnose_returns_plan_and_trace():
+    from src.activities import llm as llm_activity
 
     plan = ActionPlan(
         runbook_id="disk_cleanup",
-        params={"target_host": "192.168.1.13"},
+        params={"target_host": "192.168.198.130", "path": "/tmp", "min_age_days": 7},
         risk_level="low",
         requires_approval=True,
-        reasoning="低风险",
+        reasoning="/tmp 占用最大",
+        confidence=0.9,
     )
-    risk = RiskEvaluation(
-        approved=True,
-        risk_score=0.2,
-        reason="低风险操作",
-        auto_execute_eligible=True,
-    )
-    mock_router = AsyncMock()
-    mock_router.invoke.return_value = risk
+    trace = [
+        {"turn": 0, "tool": "get_disk_usage", "args": {"host": "192.168.198.130"}, "result_preview": "..."},
+        {"turn": 1, "tool": "get_directory_sizes", "args": {"paths": ["/tmp", "/var/log"]}, "result_preview": "..."},
+    ]
 
-    with patch("src.activities.llm.llm_router", mock_router):
-        result_json = await evaluate_risk(_alert_json(), plan.model_dump_json())
-        result = RiskEvaluation.model_validate_json(result_json)
+    async def fake_diagnose(_self, _alert):
+        return AgentResult(plan=plan, trace=trace)
 
-    assert result.approved is True
-    assert result.auto_execute_eligible is True
+    # 给 module 级 llm_router 一个非 None 占位（否则会被 RuntimeError 拦截）
+    with patch.object(llm_activity, "llm_router", object()), \
+         patch("src.llm.agent.DiagnosticAgent.diagnose", new=fake_diagnose):
+        result_json = await llm_activity.agent_diagnose(_alert_json())
+
+    out = json.loads(result_json)
+    assert out["plan"]["runbook_id"] == "disk_cleanup"
+    assert out["plan"]["params"]["path"] == "/tmp"
+    assert len(out["trace"]) == 2
+    assert out["trace"][0]["tool"] == "get_disk_usage"
+
+
+@pytest.mark.asyncio
+async def test_agent_diagnose_handles_none_plan():
+    from src.activities import llm as llm_activity
+
+    async def fake_diagnose(_self, _alert):
+        return AgentResult(plan=None, trace=[{"turn": 0, "tool": "list_failed_services"}])
+
+    with patch.object(llm_activity, "llm_router", object()), \
+         patch("src.llm.agent.DiagnosticAgent.diagnose", new=fake_diagnose):
+        result_json = await llm_activity.agent_diagnose(_alert_json())
+
+    out = json.loads(result_json)
+    assert out["plan"] is None
+    assert out["trace"]
+
+
+@pytest.mark.asyncio
+async def test_agent_diagnose_handles_agent_failure():
+    """Agent 5 轮没收敛时 activity 不应抛错，而是返回 agent_failed 标记"""
+    from src.activities import llm as llm_activity
+    from src.llm.agent import AgentLimitExceeded
+
+    async def failing_diagnose(_self, _alert):
+        raise AgentLimitExceeded("did not converge")
+
+    with patch.object(llm_activity, "llm_router", object()), \
+         patch("src.llm.agent.DiagnosticAgent.diagnose", new=failing_diagnose):
+        result_json = await llm_activity.agent_diagnose(_alert_json())
+
+    out = json.loads(result_json)
+    assert out["plan"] is None
+    assert out.get("agent_failed") is True

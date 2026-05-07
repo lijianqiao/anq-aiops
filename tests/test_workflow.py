@@ -1,13 +1,11 @@
 import json
-from datetime import timedelta
 
 import pytest
 from temporalio import activity
-from temporalio.client import Client
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
-from src.models import Alert, RCAResult, RiskEvaluation
+from src.models import Alert
 from src.workflows.alert_workflow import AlertWorkflow, ApprovalDecision
 
 TASK_QUEUE = "test-alerts"
@@ -18,8 +16,8 @@ def _alert_json(event_name: str = "Disk usage > 90%") -> str:
         event_id="12345",
         event_name=event_name,
         severity="high",
-        hostname="web-server-01",
-        host_ip="192.168.1.13",
+        hostname="aiops-target",
+        host_ip="192.168.198.130",
         trigger_id="10001",
         message="Disk usage is 95% on /tmp",
         timestamp="2026-04-30T14:30:00Z",
@@ -27,30 +25,27 @@ def _alert_json(event_name: str = "Disk usage > 90%") -> str:
     ).model_dump_json()
 
 
-@activity.defn(name="rca_analyze")
-async def mock_rca_analyze(alert_json: str) -> str:
-    return RCAResult(
-        root_cause="/tmp 满了",
-        confidence=0.9,
-        recommended_runbook="disk_cleanup",
-        params={"target_host": "192.168.1.13"},
-        reasoning="磁盘 95%",
-    ).model_dump_json()
+@activity.defn(name="agent_diagnose")
+async def mock_agent_diagnose(alert_json: str) -> str:
+    return json.dumps({
+        "plan": {
+            "runbook_id": "disk_cleanup",
+            "params": {"target_host": "192.168.198.130", "path": "/tmp", "min_age_days": 7},
+            "risk_level": "low",
+            "requires_approval": True,
+            "reasoning": "/tmp 占用 91%",
+            "trace": [],
+            "confidence": 0.9,
+        },
+        "trace": [
+            {"turn": 0, "tool": "get_disk_usage", "args": {}, "result_preview": "/tmp 91%"},
+        ],
+    })
 
 
-@activity.defn(name="plan_action")
-async def mock_plan_action(alert_json: str, rca_json: str) -> str:
-    return json.dumps({"runbook_id": "disk_cleanup", "params": {"target_host": "192.168.1.13"}})
-
-
-@activity.defn(name="evaluate_risk")
-async def mock_evaluate_risk(alert_json: str, plan_json: str) -> str:
-    return RiskEvaluation(approved=True, risk_score=0.2, reason="低风险", auto_execute_eligible=True).model_dump_json()
-
-
-@activity.defn(name="send_feishu_alert_with_ai")
-async def mock_send_feishu_alert_with_ai(alert_json: str, workflow_id: str, rca_json: str, risk_json: str) -> str:
-    return "msg_with_ai_123"
+@activity.defn(name="send_feishu_alert_with_agent")
+async def mock_send_feishu_alert_with_agent(alert_json: str, workflow_id: str, agent_output_json: str) -> str:
+    return "msg_with_agent_123"
 
 
 @activity.defn(name="send_feishu_alert")
@@ -73,18 +68,24 @@ async def mock_write_audit(
 
 @activity.defn(name="execute_runbook")
 async def mock_execute_runbook(runbook_id: str, params_json: str) -> str:
-    return json.dumps({"dry_run": {"success": True}, "execute": {"success": True}, "verify": True, "snapshot": {}, "rolled_back": False})
+    return json.dumps({
+        "dry_run": {"success": True, "stdout": "", "stderr": "", "duration_sec": 1.0},
+        "execute": {"success": True, "stdout": "", "stderr": "", "duration_sec": 1.0},
+        "verify": True,
+        "snapshot": {},
+        "rolled_back": False,
+    })
 
 
 ALL_ACTIVITIES = [
-    mock_rca_analyze, mock_plan_action, mock_evaluate_risk,
-    mock_send_feishu_alert_with_ai, mock_send_feishu_alert,
+    mock_agent_diagnose,
+    mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
     mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
 ]
 
 
 @pytest.mark.asyncio
-async def test_workflow_approved_with_ai():
+async def test_workflow_approved_with_agent():
     async with await WorkflowEnvironment.start_time_skipping() as env:
         async with Worker(
             env.client,
@@ -95,40 +96,12 @@ async def test_workflow_approved_with_ai():
             handle = await env.client.start_workflow(
                 AlertWorkflow.run,
                 _alert_json(),
-                id="test-approved-ai",
+                id="test-approved-agent",
                 task_queue=TASK_QUEUE,
             )
             await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=True))
             result = await handle.result()
             assert result == "approved"
-
-
-@pytest.mark.asyncio
-async def test_workflow_rejects_unknown_runbook_when_llm_unavailable():
-    @activity.defn(name="rca_analyze")
-    async def failing_rca(alert_json: str) -> str:
-        raise RuntimeError("LLM down")
-
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        async with Worker(
-            env.client,
-            task_queue=TASK_QUEUE,
-            workflows=[AlertWorkflow],
-            activities=[
-                failing_rca, mock_plan_action, mock_evaluate_risk,
-                mock_send_feishu_alert_with_ai, mock_send_feishu_alert,
-                mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
-            ],
-        ):
-            handle = await env.client.start_workflow(
-                AlertWorkflow.run,
-                _alert_json(event_name="CPU usage > 90%"),
-                id="test-unknown-runbook",
-                task_queue=TASK_QUEUE,
-            )
-            await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=True))
-            result = await handle.result()
-            assert result == "unsupported"
 
 
 @pytest.mark.asyncio
@@ -152,12 +125,12 @@ async def test_workflow_rejected():
 
 
 @pytest.mark.asyncio
-async def test_workflow_degrades_when_llm_fails():
-    """LLM 全部失败时应降级到纯人工模式"""
+async def test_workflow_falls_back_when_agent_fails():
+    """agent_diagnose 抛错时 workflow 应降级到关键词匹配，磁盘告警还能走 disk_cleanup"""
 
-    @activity.defn(name="rca_analyze")
-    async def failing_rca(alert_json: str) -> str:
-        raise RuntimeError("LLM down")
+    @activity.defn(name="agent_diagnose")
+    async def failing_agent(alert_json: str) -> str:
+        raise RuntimeError("agent crashed")
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
         async with Worker(
@@ -165,8 +138,8 @@ async def test_workflow_degrades_when_llm_fails():
             task_queue=TASK_QUEUE,
             workflows=[AlertWorkflow],
             activities=[
-                failing_rca, mock_plan_action, mock_evaluate_risk,
-                mock_send_feishu_alert_with_ai, mock_send_feishu_alert,
+                failing_agent,
+                mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
                 mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
             ],
         ):
@@ -174,6 +147,66 @@ async def test_workflow_degrades_when_llm_fails():
                 AlertWorkflow.run,
                 _alert_json(),
                 id="test-degraded",
+                task_queue=TASK_QUEUE,
+            )
+            await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=True))
+            result = await handle.result()
+            assert result == "approved"
+
+
+@pytest.mark.asyncio
+async def test_workflow_unsupported_when_no_runbook_match():
+    """agent 失败 + 关键词也匹配不上 → unsupported"""
+
+    @activity.defn(name="agent_diagnose")
+    async def failing_agent(alert_json: str) -> str:
+        raise RuntimeError("agent crashed")
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[AlertWorkflow],
+            activities=[
+                failing_agent,
+                mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
+                mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+            ],
+        ):
+            handle = await env.client.start_workflow(
+                AlertWorkflow.run,
+                _alert_json(event_name="Some random alert nobody knows"),
+                id="test-unsupported",
+                task_queue=TASK_QUEUE,
+            )
+            await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=True))
+            result = await handle.result()
+            assert result == "unsupported"
+
+
+@pytest.mark.asyncio
+async def test_workflow_handles_agent_choosing_none():
+    """agent 选 'none' 时 plan 是 null，走 keyword fallback"""
+
+    @activity.defn(name="agent_diagnose")
+    async def none_agent(alert_json: str) -> str:
+        return json.dumps({"plan": None, "trace": [{"turn": 0, "tool": "list_failed_services"}]})
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[AlertWorkflow],
+            activities=[
+                none_agent,
+                mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
+                mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+            ],
+        ):
+            handle = await env.client.start_workflow(
+                AlertWorkflow.run,
+                _alert_json(),  # 磁盘告警，关键词降级到 disk_cleanup
+                id="test-agent-none",
                 task_queue=TASK_QUEUE,
             )
             await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=True))

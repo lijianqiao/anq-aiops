@@ -130,8 +130,18 @@ class AlertWorkflow:
             # service_restart 缺 service_name 时从 event_name 抽一个常见服务名
             if runbook_id == "service_restart" and not raw_params.get("service_name"):
                 name_lower = alert.get("event_name", "").lower()
-                for svc in ("nginx", "redis-server", "redis", "mysql", "postgresql",
-                            "postgres", "apache2", "docker", "ssh", "sshd"):
+                for svc in (
+                    "nginx",
+                    "redis-server",
+                    "redis",
+                    "mysql",
+                    "postgresql",
+                    "postgres",
+                    "apache2",
+                    "docker",
+                    "ssh",
+                    "sshd",
+                ):
                     if svc in name_lower:
                         raw_params["service_name"] = svc
                         break
@@ -173,6 +183,10 @@ class AlertWorkflow:
         exec_result = json.loads(exec_result_json)
         if exec_result.get("verify"):
             msg = f"✅ 告警 {event_id} 处理成功（Runbook: {runbook_id}）"
+        elif not exec_result.get("dry_run", {}).get("success"):
+            msg = f"⚠️ 告警 {event_id} Runbook 预检失败，未执行实际操作"
+        elif not exec_result.get("execute", {}).get("success"):
+            msg = f"⚠️ 告警 {event_id} Runbook 执行失败"
         else:
             msg = f"⚠️ 告警 {event_id} 执行完成但验证未通过，可能需要人工介入"
 

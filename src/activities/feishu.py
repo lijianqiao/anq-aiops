@@ -167,10 +167,19 @@ async def _post_im_message(*, msg_type: str, content: dict) -> str:
             },
             json=payload,
         )
-        resp.raise_for_status()
+    # 不直接 raise_for_status：飞书 4xx 时 body 里有 code/msg，比 HTTP 状态码更有诊断价值
+    try:
         data = resp.json()
+    except ValueError as exc:
+        raise RuntimeError(
+            f"Feishu non-JSON response (HTTP {resp.status_code}): {resp.text[:500]}"
+        ) from exc
     if data.get("code") != 0:
-        raise RuntimeError(f"Feishu send error: {data}")
+        raise RuntimeError(
+            f"Feishu send error: HTTP {resp.status_code} code={data.get('code')} "
+            f"msg={data.get('msg')!r} payload_receive_id={settings.feishu_receive_id} "
+            f"payload_receive_id_type={settings.feishu_receive_id_type}"
+        )
     return data["data"]["message_id"]
 
 

@@ -14,6 +14,7 @@ wheels/
 .cache/
 .pytest_cache/
 .ruff_cache/
+.claude/worktree/
 
 # 方案
 *实施方案.md

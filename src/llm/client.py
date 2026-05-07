@@ -1,8 +1,11 @@
 import re
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from openai.types.chat import ChatCompletionMessageParam
 
 JSON_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE)
 
@@ -12,32 +15,17 @@ def _strip_json_fence(text: str) -> str:
     return match.group(1).strip() if match else text.strip()
 
 
-def _build_openai_messages(messages: list[dict[str, str]]) -> list[Any]:
-    from openai.types.chat import (
-        ChatCompletionAssistantMessageParam,
-        ChatCompletionDeveloperMessageParam,
-        ChatCompletionMessageParam,
-        ChatCompletionSystemMessageParam,
-        ChatCompletionUserMessageParam,
-    )
-
-    openai_messages: list[ChatCompletionMessageParam] = []
+def _build_openai_messages(messages: list[dict[str, str]]) -> list[ChatCompletionMessageParam]:
+    openai_messages: list[dict[str, str]] = []
     for message in messages:
         role = message["role"]
         content = message["content"]
 
-        if role == "system":
-            openai_messages.append(ChatCompletionSystemMessageParam(role="system", content=content))
-        elif role == "user":
-            openai_messages.append(ChatCompletionUserMessageParam(role="user", content=content))
-        elif role == "assistant":
-            openai_messages.append(ChatCompletionAssistantMessageParam(role="assistant", content=content))
-        elif role == "developer":
-            openai_messages.append(ChatCompletionDeveloperMessageParam(role="developer", content=content))
-        else:
+        if role not in {"system", "user", "assistant", "developer"}:
             raise ValueError(f"Unsupported OpenAI chat role: {role!r}")
+        openai_messages.append({"role": role, "content": content})
 
-    return openai_messages
+    return cast("list[ChatCompletionMessageParam]", openai_messages)
 
 
 class LLMClient(ABC):

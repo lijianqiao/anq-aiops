@@ -118,9 +118,25 @@ class AlertWorkflow:
                 workflow.logger.warning(f"LLM proposed unknown runbook {candidate!r}, falling back to keyword match")
                 candidate = _select_runbook(alert)
             runbook_id = candidate
-            runbook_params = json.dumps(plan.get("params", {"target_host": alert["host_ip"]}))
+            raw_params = plan.get("params") if isinstance(plan.get("params"), dict) else {}
         else:
             runbook_id = _select_runbook(alert)
+            raw_params = {}
+
+        # target_host 强制用 alert 真实 IP 兜底（LLM 可能给主机名 / 留空 / 写错）
+        if runbook_id is not None:
+            raw_params = dict(raw_params)
+            raw_params["target_host"] = alert["host_ip"]
+            # service_restart 缺 service_name 时从 event_name 抽一个常见服务名
+            if runbook_id == "service_restart" and not raw_params.get("service_name"):
+                name_lower = alert.get("event_name", "").lower()
+                for svc in ("nginx", "redis-server", "redis", "mysql", "postgresql",
+                            "postgres", "apache2", "docker", "ssh", "sshd"):
+                    if svc in name_lower:
+                        raw_params["service_name"] = svc
+                        break
+            runbook_params = json.dumps(raw_params)
+        else:
             runbook_params = json.dumps({"target_host": alert["host_ip"]})
 
         if runbook_id is None:

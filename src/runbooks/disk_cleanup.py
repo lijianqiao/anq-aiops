@@ -1,3 +1,5 @@
+import re
+
 from pydantic import BaseModel
 
 from src.models import RunbookResult
@@ -45,7 +47,8 @@ class DiskCleanupRunbook(BaseRunbook):
         if not result.success:
             return False
         for line in result.stdout.splitlines():
-            if "disk_usage=" in line:
-                usage = int(line.split("disk_usage=")[1].strip())
+            match = re.search(r"disk_usage=(\d+)", line)
+            if match:
+                usage = int(match.group(1))
                 return usage < 80
         return False

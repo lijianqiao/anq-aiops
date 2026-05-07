@@ -1,3 +1,5 @@
+import asyncio
+
 from temporalio import activity
 
 from src.models import ExecutionResult, RunbookResult
@@ -7,6 +9,10 @@ from src.runbooks import RUNBOOK_REGISTRY
 @activity.defn
 async def execute_runbook(runbook_id: str, params_json: str) -> str:
     """执行 Runbook：dry-run → execute → verify。返回 ExecutionResult JSON"""
+    return await asyncio.to_thread(_execute_runbook_sync, runbook_id, params_json)
+
+
+def _execute_runbook_sync(runbook_id: str, params_json: str) -> str:
     if runbook_id not in RUNBOOK_REGISTRY:
         raise ValueError(f"Unknown runbook: {runbook_id}")
 

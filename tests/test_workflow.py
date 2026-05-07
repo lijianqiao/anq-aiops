@@ -13,10 +13,10 @@ from src.workflows.alert_workflow import AlertWorkflow, ApprovalDecision
 TASK_QUEUE = "test-alerts"
 
 
-def _alert_json() -> str:
+def _alert_json(event_name: str = "Disk usage > 90%") -> str:
     return Alert(
         event_id="12345",
-        event_name="Disk usage > 90%",
+        event_name=event_name,
         severity="high",
         hostname="web-server-01",
         host_ip="192.168.1.13",
@@ -101,6 +101,34 @@ async def test_workflow_approved_with_ai():
             await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=True))
             result = await handle.result()
             assert result == "approved"
+
+
+@pytest.mark.asyncio
+async def test_workflow_rejects_unknown_runbook_when_llm_unavailable():
+    @activity.defn(name="rca_analyze")
+    async def failing_rca(alert_json: str) -> str:
+        raise RuntimeError("LLM down")
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[AlertWorkflow],
+            activities=[
+                failing_rca, mock_plan_action, mock_evaluate_risk,
+                mock_send_feishu_alert_with_ai, mock_send_feishu_alert,
+                mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+            ],
+        ):
+            handle = await env.client.start_workflow(
+                AlertWorkflow.run,
+                _alert_json(event_name="CPU usage > 90%"),
+                id="test-unknown-runbook",
+                task_queue=TASK_QUEUE,
+            )
+            await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=True))
+            result = await handle.result()
+            assert result == "unsupported"
 
 
 @pytest.mark.asyncio

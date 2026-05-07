@@ -6,14 +6,14 @@ from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 
-def _select_runbook(alert: dict) -> str:
+def _select_runbook(alert: dict) -> str | None:
     """Phase 1 简单匹配：按告警名称关键词选 Runbook"""
     name = alert.get("event_name", "").lower()
     if "disk" in name or "磁盘" in name:
         return "disk_cleanup"
     if "service" in name or "进程" in name or "process" in name:
         return "service_restart"
-    return "disk_cleanup"
+    return None
 
 
 @dataclass
@@ -106,6 +106,19 @@ class AlertWorkflow:
         else:
             runbook_id = _select_runbook(alert)
             runbook_params = json.dumps({"target_host": alert["host_ip"]})
+
+        if runbook_id is None:
+            await workflow.execute_activity(
+                "write_audit",
+                args=[alert_json, workflow_id, "unsupported", None, None, None, feishu_msg_id],
+                start_to_close_timeout=timedelta(seconds=10),
+            )
+            await workflow.execute_activity(
+                "send_feishu_result",
+                args=[f"Unsupported alert {event_id}: no matching runbook"],
+                start_to_close_timeout=timedelta(seconds=10),
+            )
+            return "unsupported"
 
         exec_result_json = await workflow.execute_activity(
             "execute_runbook",

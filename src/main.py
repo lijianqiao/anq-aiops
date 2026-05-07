@@ -57,8 +57,8 @@ async def lifespan(app: FastAPI):
 
     worker_task.cancel()
     consumer_task.cancel()
+    await asyncio.gather(worker_task, consumer_task, return_exceptions=True)
     await redis_client.aclose()
-    await temporal_client.__aexit__(None, None, None)
 
 
 app = FastAPI(title="AIOps Phase 2", lifespan=lifespan)

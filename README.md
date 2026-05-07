@@ -25,15 +25,15 @@ Zabbix Webhook
 
 ## 技术栈
 
-| 层 | 技术 |
-|---|------|
-| API | FastAPI + Uvicorn |
-| 工作流引擎 | Temporal |
-| 消息总线 | Redis Stream |
-| LLM | OpenAI / Anthropic / DeepSeek / 本地 llama.cpp |
-| 通知 | 飞书机器人 Webhook |
-| 自动化 | Ansible Runner |
-| 数据库 | PostgreSQL (Temporal) |
+| 层         | 技术                                           |
+| ---------- | ---------------------------------------------- |
+| API        | FastAPI + Uvicorn                              |
+| 工作流引擎 | Temporal                                       |
+| 消息总线   | Redis Stream                                   |
+| LLM        | OpenAI / Anthropic / DeepSeek / 本地 llama.cpp |
+| 通知       | 飞书机器人 Webhook                             |
+| 自动化     | Ansible Runner                                 |
+| 数据库     | PostgreSQL (Temporal)                          |
 
 ## 快速开始
 
@@ -48,6 +48,7 @@ docker compose up -d
 # 3. 测试告警
 curl -X POST http://localhost:8000/webhook/zabbix \
   -H "Content-Type: application/json" \
+  -H "X-Zabbix-Token: $ZABBIX_WEBHOOK_TOKEN" \
   -d '{
     "event_id": "test-001",
     "event_name": "Disk usage > 90%",
@@ -94,9 +95,15 @@ src/
 
 参见 `.env.example`。核心配置：
 
-| 变量 | 说明 |
-|------|------|
-| `FEISHU_WEBHOOK_URL` | 飞书机器人 Webhook 地址 |
-| `LLM_PRIMARY_PROVIDER` | 主 LLM 供应商 (openai/anthropic) |
-| `LLM_PRIMARY_API_KEY` | 主 LLM API Key |
-| `LLM_FALLBACK_BASE_URL` | 备用 LLM 地址 (本地 llama.cpp) |
+| 变量                    | 说明                             |
+| ----------------------- | -------------------------------- |
+| `FEISHU_WEBHOOK_URL`    | 飞书机器人 Webhook 地址          |
+| `LLM_PRIMARY_PROVIDER`  | 主 LLM 供应商 (openai/anthropic) |
+| `LLM_PRIMARY_API_KEY`   | 主 LLM API Key                   |
+| `LLM_FALLBACK_BASE_URL` | 备用 LLM 地址 (本地 llama.cpp)   |
+
+## 笔记
+
+- `/webhook/zabbix`需要`ZABBIX_WEBHOOK_TOKEN`通过`X-Zabbix-Token`或`Authorization: Bearer ...`.
+- `/webhook/feishu` 需要飞书回调签名头和 `FEISHU_WEBHOOK_SECRET`.
+- 提醒重复数据删除用途`event_id`作为具有 1 小时 TTL 的密钥。重复的一个`PROBLEM -> RECOVERY -> PROBLEM`循环相同`event_id`该窗口内的内容被视为重复

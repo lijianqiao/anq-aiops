@@ -32,6 +32,18 @@ class TestDiskCleanupRunbook:
         params = DiskCleanupParams(target_host="10.0.0.1")
         assert rb.verify(params) is True
 
+    @patch("src.runbooks.disk_cleanup.run_ansible")
+    def test_verify_parses_ansible_debug_output(self, mock_run: MagicMock) -> None:
+        mock_run.return_value = RunbookResult(
+            success=True,
+            stdout='ok: [host] => {"msg": "disk_usage=45"}',
+            stderr="",
+            duration_sec=0.5,
+        )
+        rb = DiskCleanupRunbook()
+        params = DiskCleanupParams(target_host="10.0.0.1")
+        assert rb.verify(params) is True
+
 
 class TestServiceRestartRunbook:
     def test_params_schema(self) -> None:

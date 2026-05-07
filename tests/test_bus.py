@@ -1,11 +1,12 @@
 from contextlib import suppress
 from datetime import datetime
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import redis.asyncio as aioredis
 from redis.exceptions import ResponseError
 
-from src.bus.consumer import consume_alert
+from src.bus.consumer import STREAM_KEY, ack_alert, consume_alert, reclaim_pending_alert
 from src.bus.producer import produce_alert
 from src.models import Alert
 
@@ -61,3 +62,38 @@ async def test_consume_empty(redis_client: aioredis.Redis) -> None:
         await redis_client.xgroup_create("aiops:alerts", "aiops-workers", id="0", mkstream=True)
     result = await consume_alert(redis_client, "aiops-workers", "test-consumer", block_ms=100)
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_consume_does_not_ack_before_workflow_start(alert: Alert) -> None:
+    client = MagicMock()
+    client.xreadgroup = AsyncMock(return_value=[(STREAM_KEY, [(b"1-0", {b"data": alert.model_dump_json().encode()})])])
+    client.xack = AsyncMock()
+
+    result = await consume_alert(client, "aiops-workers", "test-consumer", block_ms=100)
+
+    assert result is not None
+    client.xack.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ack_alert_acks_after_workflow_start() -> None:
+    client = MagicMock()
+    client.xack = AsyncMock()
+
+    await ack_alert(client, "aiops-workers", "1-0")
+
+    client.xack.assert_awaited_once_with(STREAM_KEY, "aiops-workers", "1-0")
+
+
+@pytest.mark.asyncio
+async def test_reclaim_pending_alert(alert: Alert) -> None:
+    client = MagicMock()
+    client.xautoclaim = AsyncMock(return_value=[b"0-0", [(b"1-0", {b"data": alert.model_dump_json().encode()})], []])
+
+    result = await reclaim_pending_alert(client, "aiops-workers", "test-consumer", min_idle_ms=100)
+
+    assert result is not None
+    reclaimed_alert, msg_id = result
+    assert reclaimed_alert.event_id == alert.event_id
+    assert msg_id == b"1-0"

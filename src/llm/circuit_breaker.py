@@ -15,6 +15,7 @@ class CircuitBreaker:
         self._successes = 0
         self._failures = 0
         self._opened_at = 0.0
+        self._window_started_at = time.time()
 
     def check(self) -> None:
         if self.state == "CLOSED":
@@ -31,12 +32,14 @@ class CircuitBreaker:
         if self.state == "HALF_OPEN":
             self._reset()
             return
+        self._reset_closed_window_if_expired()
         self._successes += 1
 
     def record_failure(self) -> None:
         if self.state == "HALF_OPEN":
             self._trip()
             return
+        self._reset_closed_window_if_expired()
         self._failures += 1
         total = self._successes + self._failures
         if total >= 3 and self._failures / total > self.threshold:
@@ -51,3 +54,10 @@ class CircuitBreaker:
         self._successes = 0
         self._failures = 0
         self._opened_at = 0.0
+        self._window_started_at = time.time()
+
+    def _reset_closed_window_if_expired(self) -> None:
+        if self.state == "CLOSED" and time.time() - self._window_started_at >= self.window_sec:
+            self._successes = 0
+            self._failures = 0
+            self._window_started_at = time.time()

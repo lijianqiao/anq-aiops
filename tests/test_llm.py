@@ -54,6 +54,39 @@ async def test_openai_client_chat_json():
     assert isinstance(result, SampleResponse)
     assert result.answer == "yes"
     assert result.score == 0.9
+    assert mock_openai.chat.completions.create.call_args.kwargs["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
+async def test_openai_client_chat_json_strips_markdown_fence():
+    client = OpenAICompatibleClient(base_url="http://test", api_key="test", default_model="gpt-4o")
+
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = '```json\n{"answer": "yes", "score": 0.9}\n```'
+
+    with patch.object(client, "_client") as mock_openai:
+        mock_openai.chat.completions.create = AsyncMock(return_value=mock_response)
+        result = await client.chat_json(
+            messages=[{"role": "user", "content": "test"}],
+            schema=SampleResponse,
+        )
+
+    assert result.answer == "yes"
+
+
+@pytest.mark.asyncio
+async def test_openai_client_chat_rejects_empty_content():
+    client = OpenAICompatibleClient(base_url="http://test", api_key="test", default_model="gpt-4o")
+
+    mock_response = MagicMock()
+    mock_response.choices = [MagicMock()]
+    mock_response.choices[0].message.content = None
+
+    with patch.object(client, "_client") as mock_openai:
+        mock_openai.chat.completions.create = AsyncMock(return_value=mock_response)
+        with pytest.raises(RuntimeError, match="empty"):
+            await client.chat(messages=[{"role": "user", "content": "test"}])
 
 
 @pytest.mark.asyncio
@@ -121,6 +154,18 @@ def test_circuit_breaker_resets_on_success():
     cb.check()
     cb.record_success()
     assert cb.state == "CLOSED"
+
+
+def test_circuit_breaker_closed_counts_reset_after_window():
+    cb = CircuitBreaker(threshold=0.5, window_sec=1)
+    cb.record_success()
+    cb.record_success()
+    time.sleep(1.1)
+    cb.record_failure()
+    cb.record_failure()
+    assert cb.state == "CLOSED"
+    cb.record_failure()
+    assert cb.state == "OPEN"
 
 
 @pytest.mark.asyncio

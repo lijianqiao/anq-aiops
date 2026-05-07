@@ -1,7 +1,43 @@
+import re
 from abc import ABC, abstractmethod
 from typing import Any
 
 from pydantic import BaseModel
+
+JSON_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*(.*?)\s*```\s*$", re.DOTALL | re.IGNORECASE)
+
+
+def _strip_json_fence(text: str) -> str:
+    match = JSON_FENCE_RE.match(text)
+    return match.group(1).strip() if match else text.strip()
+
+
+def _build_openai_messages(messages: list[dict[str, str]]) -> list[Any]:
+    from openai.types.chat import (
+        ChatCompletionAssistantMessageParam,
+        ChatCompletionDeveloperMessageParam,
+        ChatCompletionMessageParam,
+        ChatCompletionSystemMessageParam,
+        ChatCompletionUserMessageParam,
+    )
+
+    openai_messages: list[ChatCompletionMessageParam] = []
+    for message in messages:
+        role = message["role"]
+        content = message["content"]
+
+        if role == "system":
+            openai_messages.append(ChatCompletionSystemMessageParam(role="system", content=content))
+        elif role == "user":
+            openai_messages.append(ChatCompletionUserMessageParam(role="user", content=content))
+        elif role == "assistant":
+            openai_messages.append(ChatCompletionAssistantMessageParam(role="assistant", content=content))
+        elif role == "developer":
+            openai_messages.append(ChatCompletionDeveloperMessageParam(role="developer", content=content))
+        else:
+            raise ValueError(f"Unsupported OpenAI chat role: {role!r}")
+
+    return openai_messages
 
 
 class LLMClient(ABC):
@@ -20,7 +56,7 @@ class LLMClient(ABC):
     ) -> BaseModel:
         """发送消息，返回 Pydantic 模型"""
         text = await self.chat(messages, model=model, timeout=timeout)
-        return schema.model_validate_json(text)
+        return schema.model_validate_json(_strip_json_fence(text))
 
 
 class OpenAICompatibleClient(LLMClient):
@@ -35,10 +71,31 @@ class OpenAICompatibleClient(LLMClient):
     async def chat(self, messages: list[dict[str, str]], model: str | None = None, timeout: float = 30) -> str:
         response = await self._client.chat.completions.create(
             model=model or self.default_model,
-            messages=messages,
+            messages=_build_openai_messages(messages),
             timeout=timeout,
         )
-        return response.choices[0].message.content
+        content = response.choices[0].message.content
+        if content is None:
+            raise RuntimeError("LLM response content is empty")
+        return content
+
+    async def chat_json(
+        self,
+        messages: list[dict[str, str]],
+        schema: type[BaseModel],
+        model: str | None = None,
+        timeout: float = 30,
+    ) -> BaseModel:
+        response = await self._client.chat.completions.create(
+            model=model or self.default_model,
+            messages=_build_openai_messages(messages),
+            timeout=timeout,
+            response_format={"type": "json_object"},
+        )
+        content = response.choices[0].message.content
+        if content is None:
+            raise RuntimeError("LLM response content is empty")
+        return schema.model_validate_json(_strip_json_fence(content))
 
 
 class AnthropicClient(LLMClient):

@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     temporal_task_queue: str = "aiops-alerts"
     feishu_webhook_url: str = ""
     feishu_webhook_secret: str = ""
+    zabbix_webhook_token: str = ""
+    audit_log_path: str = "./audit.log"
     ansible_private_data_dir: str = "./ansible"
     ansible_inventory: str = "./ansible/inventory.ini"
 

@@ -40,3 +40,7 @@
     - name: Set disk usage fact
       ansible.builtin.set_fact:
         disk_usage: "{{ disk_usage.stdout }}"
+
+    - name: Show disk usage for verifier
+      ansible.builtin.debug:
+        msg: "disk_usage={{ disk_usage }}"

@@ -1,8 +1,10 @@
 import datetime as dt  # noqa: UP017
 import json
+from pathlib import Path
 
 from temporalio import activity
 
+from src.config import settings
 from src.models import Alert, AuditRecord, ExecutionResult
 
 
@@ -31,6 +33,12 @@ async def write_audit(
         created_at=dt.datetime.now(dt.UTC),
         completed_at=dt.datetime.now(dt.UTC),
     )
-    # Phase 1: 先写日志，后续接 PostgreSQL
+    # Keep a durable JSONL audit trail until a database sink is introduced.
+    audit_json = record.model_dump_json()
+    audit_path = Path(settings.audit_log_path)
+    if audit_path.parent != Path("."):
+        audit_path.parent.mkdir(parents=True, exist_ok=True)
+    with audit_path.open("a", encoding="utf-8") as audit_file:
+        audit_file.write(audit_json + "\n")
     print(f"[AUDIT] {record.alert.event_id} | {record.decision} | {record.runbook_id}")
-    return record.model_dump_json()
+    return audit_json

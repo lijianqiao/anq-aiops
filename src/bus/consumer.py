@@ -1,3 +1,4 @@
+import asyncio
 import contextlib
 import logging
 
@@ -91,3 +92,5 @@ async def start_consumer_loop(app) -> None:
             logger.info(f"Workflow already exists, acked message: {workflow_id}")
         except Exception as e:
             logger.error(f"Failed to start workflow for {alert.event_id}: {e}")
+            # 不 ack，让 reclaim 重投；sleep 避免紧循环打满 CPU
+            await asyncio.sleep(5)

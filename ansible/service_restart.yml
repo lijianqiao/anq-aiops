@@ -33,3 +33,8 @@
     - name: Report final status
       ansible.builtin.debug:
         msg: "Service {{ svc_name }} state after restart: {{ svc_after.status.ActiveState }}"
+
+    # 给 src/runbooks/service_restart.py 的 verify() 一个稳定可解析的字面串
+    - name: Emit machine-readable state for verifier
+      ansible.builtin.debug:
+        msg: "service_state={{ svc_after.status.ActiveState }}"

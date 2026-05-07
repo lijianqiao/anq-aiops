@@ -17,30 +17,21 @@
       ansible.builtin.debug:
         msg: "Would delete {{ old_files.files | length }} files in {{ cleanup_path }}"
 
-    - name: Delete old files
-      ansible.builtin.find:
-        paths: "{{ cleanup_path }}"
-        age: "{{ min_age }}d"
-        file_type: file
-      register: to_delete
-
     - name: Remove files
       ansible.builtin.file:
         path: "{{ item.path }}"
         state: absent
-      loop: "{{ to_delete.files }}"
-      when: to_delete.files | length > 0
+      loop: "{{ old_files.files }}"
+      when: old_files.files | length > 0
 
     - name: Check disk usage after cleanup
       ansible.builtin.shell:
         cmd: "df --output=pcent {{ cleanup_path }} | tail -1 | tr -d ' %'"
-      register: disk_usage
+      register: disk_usage_result
+      # 必须显式打开，否则 verify (--check) 模式下 shell 会被跳过，下游 debug 拿不到值
+      check_mode: false
       changed_when: false
-
-    - name: Set disk usage fact
-      ansible.builtin.set_fact:
-        disk_usage: "{{ disk_usage.stdout }}"
 
     - name: Show disk usage for verifier
       ansible.builtin.debug:
-        msg: "disk_usage={{ disk_usage }}"
+        msg: "disk_usage={{ disk_usage_result.stdout }}"

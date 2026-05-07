@@ -1,13 +1,16 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.models import RunbookResult
 from src.runbooks.base import BaseRunbook, run_ansible
 
+_HOSTNAME_RE = r"^[A-Za-z0-9._\-]{1,64}$"
+_SERVICE_RE = r"^[A-Za-z0-9._\-@]{1,64}$"
+
 
 class ServiceRestartParams(BaseModel):
     """服务重启参数"""
-    target_host: str
-    service_name: str
+    target_host: str = Field(pattern=_HOSTNAME_RE)
+    service_name: str = Field(pattern=_SERVICE_RE)
 
 
 class ServiceRestartRunbook(BaseRunbook):

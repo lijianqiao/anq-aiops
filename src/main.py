@@ -33,11 +33,8 @@ async def lifespan(app: FastAPI):
     with suppress(ResponseError):
         await redis_client.xgroup_create("aiops:alerts", "aiops-workers", id="0", mkstream=True)
 
-    from src.bus.consumer import start_consumer_loop
-
-    consumer_task = asyncio.create_task(start_consumer_loop(app))
-
-    # 初始化 LLM Router
+    # 顺序：先初始化 LLM Router → 起 worker → 最后才起 consumer，
+    # 否则 consumer 拉到积压消息触发 workflow 时 llm_router 还是 None
     llm_router = create_llm_router()
     llm_activities.llm_router = llm_router
 
@@ -52,6 +49,17 @@ async def lifespan(app: FastAPI):
         ],
     )
     worker_task = asyncio.create_task(worker.run())
+
+    from src.bus.consumer import start_consumer_loop
+
+    consumer_task = asyncio.create_task(start_consumer_loop(app))
+
+    # 飞书长连接监听（卡片审批回调）。daemon thread，进程退出自动结束。
+    # 没配 App ID/Secret 时直接跳过，方便本地起服务跑非飞书功能。
+    if settings.feishu_app_id and settings.feishu_app_secret:
+        from src.feishu_listener import start_in_thread as start_feishu_listener
+
+        start_feishu_listener(temporal_client)
 
     yield
 

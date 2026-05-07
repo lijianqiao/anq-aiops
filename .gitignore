@@ -19,4 +19,5 @@ uv.lock
 
 # 方案
 *实施方案.md
-superpowers/
+docs/superpowers/
+docs/optional*

@@ -1,16 +1,20 @@
 import re
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from src.models import RunbookResult
 from src.runbooks.base import BaseRunbook, run_ansible
 
+# 白名单：限制 LLM 给出离谱参数把生产删空
+_HOSTNAME_RE = r"^[A-Za-z0-9._\-]{1,64}$"
+_PATH_RE = r"^/(tmp|var/log|var/cache)(/[A-Za-z0-9._\-/]*)?$"
+
 
 class DiskCleanupParams(BaseModel):
     """磁盘清理参数"""
-    target_host: str
-    path: str = "/tmp"
-    min_age_days: int = 7
+    target_host: str = Field(pattern=_HOSTNAME_RE)
+    path: str = Field(default="/tmp", pattern=_PATH_RE)
+    min_age_days: int = Field(default=7, ge=1, le=365)
 
 
 class DiskCleanupRunbook(BaseRunbook):

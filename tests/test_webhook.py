@@ -1,6 +1,3 @@
-import hashlib
-import json
-import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -28,7 +25,6 @@ def zabbix_payload() -> dict:
 @pytest.fixture(autouse=True)
 def _mock_app_state(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(settings, "zabbix_webhook_token", "test-zabbix-token")
-    monkeypatch.setattr(settings, "feishu_webhook_secret", "test-feishu-secret")
     app.state.redis = MagicMock()
     app.state.temporal = MagicMock()
     yield
@@ -38,20 +34,6 @@ def _mock_app_state(monkeypatch: pytest.MonkeyPatch):
 
 def _zabbix_headers() -> dict[str, str]:
     return {"X-Zabbix-Token": "test-zabbix-token"}
-
-
-def _feishu_headers(body: bytes) -> dict[str, str]:
-    timestamp = str(int(time.time()))
-    nonce = "test-nonce"
-    signature = hashlib.sha256(
-        f"{timestamp}{nonce}{settings.feishu_webhook_secret}".encode() + body,
-    ).hexdigest()
-    return {
-        "Content-Type": "application/json",
-        "X-Lark-Request-Timestamp": timestamp,
-        "X-Lark-Request-Nonce": nonce,
-        "X-Lark-Signature": signature,
-    }
 
 
 @pytest.mark.asyncio
@@ -97,35 +79,5 @@ async def test_zabbix_webhook_rejects_invalid_token(zabbix_payload: dict) -> Non
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post("/webhook/zabbix", json=zabbix_payload, headers={"X-Zabbix-Token": "bad"})
-
-    assert resp.status_code == 401
-
-
-@pytest.mark.asyncio
-async def test_feishu_webhook_requires_valid_signature() -> None:
-    payload = {"action": {"value": json.dumps({"workflow_id": "alert-123", "action": "approve"})}}
-    body = json.dumps(payload).encode("utf-8")
-    handle = MagicMock()
-    handle.signal = AsyncMock()
-    app.state.temporal.get_workflow_handle.return_value = handle
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/webhook/feishu", content=body, headers=_feishu_headers(body))
-
-    assert resp.status_code == 200
-    handle.signal.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_feishu_webhook_rejects_bad_signature() -> None:
-    payload = {"action": {"value": json.dumps({"workflow_id": "alert-123", "action": "approve"})}}
-    body = json.dumps(payload).encode("utf-8")
-    headers = _feishu_headers(body)
-    headers["X-Lark-Signature"] = "bad"
-
-    transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        resp = await client.post("/webhook/feishu", content=body, headers=headers)
 
     assert resp.status_code == 401

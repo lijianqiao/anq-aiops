@@ -7,8 +7,15 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     temporal_address: str = "localhost:7233"
     temporal_task_queue: str = "aiops-alerts"
-    feishu_webhook_url: str = ""
-    feishu_webhook_secret: str = ""
+
+    # Feishu 应用机器人凭据（开放平台 -> 应用 -> 凭证与基础信息）
+    # 同一对凭据用于：① IM v1 发卡片  ② 长连接接收卡片回调
+    feishu_app_id: str = ""
+    feishu_app_secret: str = ""
+    # 默认接收对象，chat_id / open_id / user_id / email / union_id
+    feishu_receive_id: str = ""
+    feishu_receive_id_type: str = "chat_id"
+
     zabbix_webhook_token: str = ""
     audit_log_path: str = "./audit.log"
     ansible_private_data_dir: str = "./ansible"
@@ -30,7 +37,8 @@ class Settings(BaseSettings):
     llm_timeout: float = 30
     llm_circuit_breaker_threshold: float = 0.3
 
-    model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
+    # extra="ignore"：允许 .env 里残留旧字段（如 FEISHU_WEBHOOK_URL）不报错，方便平滑切换
+    model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 
 
 settings = Settings()

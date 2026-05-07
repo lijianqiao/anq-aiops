@@ -1,4 +1,6 @@
+import asyncio
 import json
+import time
 
 import httpx
 from temporalio import activity
@@ -6,94 +8,93 @@ from temporalio import activity
 from src.config import settings
 from src.models import Alert, RCAResult, RiskEvaluation
 
+_FEISHU_BASE = "https://open.feishu.cn/open-apis"
+
+
+class _TokenManager:
+    """缓存 tenant_access_token，提前 5 分钟续期"""
+
+    def __init__(self) -> None:
+        self._token: str = ""
+        self._expire_at: float = 0.0
+        self._lock = asyncio.Lock()
+
+    async def get(self) -> str:
+        async with self._lock:
+            now = time.time()
+            if self._token and now < self._expire_at - 300:
+                return self._token
+            async with httpx.AsyncClient(timeout=10) as client:
+                resp = await client.post(
+                    f"{_FEISHU_BASE}/auth/v3/tenant_access_token/internal",
+                    json={"app_id": settings.feishu_app_id, "app_secret": settings.feishu_app_secret},
+                )
+                resp.raise_for_status()
+                data = resp.json()
+            if data.get("code") != 0:
+                raise RuntimeError(f"Feishu token error: {data}")
+            self._token = data["tenant_access_token"]
+            self._expire_at = now + int(data.get("expire", 7200))
+            return self._token
+
+
+_token_manager = _TokenManager()
+
+
+_SEVERITY_EMOJI = {
+    "disaster": "🔴",
+    "high": "🟠",
+    "average": "🟡",
+    "warning": "🔵",
+    "info": "⚪",
+}
+
+
+def _action_button(text: str, btn_type: str, workflow_id: str, action: str, alert_id: str) -> dict:
+    return {
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": text},
+        "type": btn_type,
+        "value": {"workflow_id": workflow_id, "action": action, "alert_id": alert_id},
+    }
+
 
 def build_feishu_card(alert: Alert, workflow_id: str) -> dict:
-    """构造飞书 Interactive Card"""
-    severity_emoji = {
-        "disaster": "🔴",
-        "high": "🟠",
-        "average": "🟡",
-        "warning": "🔵",
-        "info": "⚪",
-    }
-    emoji = severity_emoji.get(alert.severity, "⚪")
+    """构造飞书 Interactive Card（IM v1 用，返回 card 本体，不含外层 msg_type 包装）"""
+    emoji = _SEVERITY_EMOJI.get(alert.severity, "⚪")
     return {
-        "msg_type": "interactive",
-        "card": {
-            "header": {
-                "title": {"tag": "plain_text", "content": f"{emoji} AIOps 告警通知"},
-                "template": "red" if alert.severity in ("disaster", "high") else "orange",
-            },
-            "elements": [
-                {
-                    "tag": "div",
-                    "fields": [
-                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**设备：**{alert.hostname}"}},
-                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**IP：**{alert.host_ip}"}},
-                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**级别：**{alert.severity}"}},
-                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**状态：**{alert.status}"}},
-                    ],
-                },
-                {"tag": "div", "text": {"tag": "lark_md", "content": f"**告警：**{alert.event_name}"}},
-                {"tag": "div", "text": {"tag": "lark_md", "content": f"**详情：**{alert.message}"}},
-                {"tag": "div", "text": {"tag": "lark_md", "content": f"**时间：**{alert.timestamp}"}},
-                {"tag": "hr"},
-                {
-                    "tag": "action",
-                    "actions": [
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "批准执行"},
-                            "type": "primary",
-                            "value": json.dumps({"workflow_id": workflow_id, "action": "approve", "alert_id": alert.event_id}),
-                        },
-                        {
-                            "tag": "button",
-                            "text": {"tag": "plain_text", "content": "拒绝"},
-                            "type": "danger",
-                            "value": json.dumps({"workflow_id": workflow_id, "action": "reject", "alert_id": alert.event_id}),
-                        },
-                    ],
-                },
-            ],
+        "header": {
+            "title": {"tag": "plain_text", "content": f"{emoji} AIOps 告警通知"},
+            "template": "red" if alert.severity in ("disaster", "high") else "orange",
         },
+        "elements": [
+            {
+                "tag": "div",
+                "fields": [
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**设备：**{alert.hostname}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**IP：**{alert.host_ip}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**级别：**{alert.severity}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**状态：**{alert.status}"}},
+                ],
+            },
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"**告警：**{alert.event_name}"}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"**详情：**{alert.message}"}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"**时间：**{alert.timestamp}"}},
+            {"tag": "hr"},
+            {
+                "tag": "action",
+                "actions": [
+                    _action_button("批准执行", "primary", workflow_id, "approve", alert.event_id),
+                    _action_button("拒绝", "danger", workflow_id, "reject", alert.event_id),
+                ],
+            },
+        ],
     }
-
-
-@activity.defn
-async def send_feishu_alert(alert_json: str, workflow_id: str) -> str:
-    """推送告警卡片到飞书，返回 message_id"""
-    alert = Alert.model_validate_json(alert_json)
-    card = build_feishu_card(alert, workflow_id)
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(settings.feishu_webhook_url, json=card, timeout=10)
-        resp.raise_for_status()
-        result = resp.json()
-    if result.get("StatusCode", -1) != 0:
-        raise RuntimeError(f"Feishu API error: {result}")
-    return result.get("msg_id", "")
-
-
-@activity.defn
-async def send_feishu_result(message: str) -> None:
-    """推送执行结果到飞书"""
-    payload = {"msg_type": "text", "content": {"text": message}}
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(settings.feishu_webhook_url, json=payload, timeout=10)
-        resp.raise_for_status()
 
 
 def build_feishu_card_with_ai(alert: Alert, workflow_id: str, rca: RCAResult, risk: RiskEvaluation) -> dict:
-    """构造带 AI 分析区块的飞书卡片"""
-    severity_emoji = {
-        "disaster": "🔴",
-        "high": "🟠",
-        "average": "🟡",
-        "warning": "🔵",
-        "info": "⚪",
-    }
-    emoji = severity_emoji.get(alert.severity, "⚪")
-
+    """构造带 AI 分析区块的飞书卡片（同样返回 card 本体）"""
+    emoji = _SEVERITY_EMOJI.get(alert.severity, "⚪")
     confidence_pct = f"{int(rca.confidence * 100)}%"
     risk_label = "🟢 低风险" if risk.risk_score < 0.4 else "🟡 中风险" if risk.risk_score < 0.7 else "🔴 高风险"
 
@@ -113,54 +114,72 @@ def build_feishu_card_with_ai(alert: Alert, workflow_id: str, rca: RCAResult, ri
     }
 
     actions = [
-        {
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": "按建议执行"},
-            "type": "primary",
-            "value": json.dumps({"workflow_id": workflow_id, "action": "approve", "alert_id": alert.event_id}),
-        },
-        {
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": "拒绝"},
-            "type": "danger",
-            "value": json.dumps({"workflow_id": workflow_id, "action": "reject", "alert_id": alert.event_id}),
-        },
+        _action_button("按建议执行", "primary", workflow_id, "approve", alert.event_id),
+        _action_button("拒绝", "danger", workflow_id, "reject", alert.event_id),
     ]
-
     if risk.risk_score >= 0.7:
-        actions.insert(1, {
-            "tag": "button",
-            "text": {"tag": "plain_text", "content": "⚠️ 高风险 - 人工处理"},
-            "type": "default",
-            "value": json.dumps({"workflow_id": workflow_id, "action": "reject", "alert_id": alert.event_id}),
-        })
+        actions.insert(1, _action_button("⚠️ 高风险 - 人工处理", "default", workflow_id, "reject", alert.event_id))
 
     return {
-        "msg_type": "interactive",
-        "card": {
-            "header": {
-                "title": {"tag": "plain_text", "content": f"{emoji} AIOps 告警通知"},
-                "template": "red" if alert.severity in ("disaster", "high") else "orange",
-            },
-            "elements": [
-                {
-                    "tag": "div",
-                    "fields": [
-                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**设备：**{alert.hostname}"}},
-                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**IP：**{alert.host_ip}"}},
-                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**级别：**{alert.severity}"}},
-                        {"is_short": True, "text": {"tag": "lark_md", "content": f"**状态：**{alert.status}"}},
-                    ],
-                },
-                {"tag": "div", "text": {"tag": "lark_md", "content": f"**告警：**{alert.event_name}"}},
-                {"tag": "div", "text": {"tag": "lark_md", "content": f"**详情：**{alert.message}"}},
-                {"tag": "hr"},
-                ai_section,
-                {"tag": "hr"},
-                {"tag": "action", "actions": actions},
-            ],
+        "header": {
+            "title": {"tag": "plain_text", "content": f"{emoji} AIOps 告警通知"},
+            "template": "red" if alert.severity in ("disaster", "high") else "orange",
         },
+        "elements": [
+            {
+                "tag": "div",
+                "fields": [
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**设备：**{alert.hostname}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**IP：**{alert.host_ip}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**级别：**{alert.severity}"}},
+                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**状态：**{alert.status}"}},
+                ],
+            },
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"**告警：**{alert.event_name}"}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"**详情：**{alert.message}"}},
+            {"tag": "hr"},
+            ai_section,
+            {"tag": "hr"},
+            {"tag": "action", "actions": actions},
+        ],
     }
+
+
+async def _post_im_message(*, msg_type: str, content: dict) -> str:
+    """通过 IM v1 接口发消息，返回 message_id"""
+    if not settings.feishu_receive_id:
+        raise RuntimeError("FEISHU_RECEIVE_ID is not configured")
+
+    token = await _token_manager.get()
+    payload = {
+        "receive_id": settings.feishu_receive_id,
+        "msg_type": msg_type,
+        # IM v1 要求 content 是 JSON 字符串
+        "content": json.dumps(content, ensure_ascii=False),
+    }
+    url = f"{_FEISHU_BASE}/im/v1/messages?receive_id_type={settings.feishu_receive_id_type}"
+    async with httpx.AsyncClient(timeout=10) as client:
+        resp = await client.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json; charset=utf-8",
+            },
+            json=payload,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"Feishu send error: {data}")
+    return data["data"]["message_id"]
+
+
+@activity.defn
+async def send_feishu_alert(alert_json: str, workflow_id: str) -> str:
+    """推送告警卡片到飞书，返回 message_id"""
+    alert = Alert.model_validate_json(alert_json)
+    card = build_feishu_card(alert, workflow_id)
+    return await _post_im_message(msg_type="interactive", content=card)
 
 
 @activity.defn
@@ -170,10 +189,10 @@ async def send_feishu_alert_with_ai(alert_json: str, workflow_id: str, rca_json:
     rca = RCAResult.model_validate_json(rca_json)
     risk = RiskEvaluation.model_validate_json(risk_json)
     card = build_feishu_card_with_ai(alert, workflow_id, rca, risk)
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(settings.feishu_webhook_url, json=card, timeout=10)
-        resp.raise_for_status()
-        result = resp.json()
-    if result.get("StatusCode", -1) != 0:
-        raise RuntimeError(f"Feishu API error: {result}")
-    return result.get("msg_id", "")
+    return await _post_im_message(msg_type="interactive", content=card)
+
+
+@activity.defn
+async def send_feishu_result(message: str) -> None:
+    """推送执行结果到飞书"""
+    await _post_im_message(msg_type="text", content={"text": message})

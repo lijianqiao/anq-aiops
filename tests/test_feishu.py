@@ -34,7 +34,9 @@ def test_build_feishu_card_with_ai():
 
     card = build_feishu_card_with_ai(alert, "wf-123", rca, risk)
 
-    assert card["msg_type"] == "interactive"
+    # IM v1 接口要的是 card 本体，不再包外层 msg_type
+    assert "header" in card
+    assert "elements" in card
     card_str = str(card)
     assert "AI 分析" in card_str
     assert "/tmp 目录过期文件过多" in card_str

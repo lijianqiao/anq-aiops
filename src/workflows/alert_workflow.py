@@ -5,6 +5,13 @@ from datetime import timedelta
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
+# 白名单与 src/runbooks/__init__.py 的 RUNBOOK_REGISTRY 保持同步。
+# 不直接 import RUNBOOK_REGISTRY 是为了让 workflow 模块保持轻量、可被 sandbox 检查。
+_KNOWN_RUNBOOKS = frozenset({"disk_cleanup", "service_restart"})
+
+# 通知/审计类活动的统一重试策略，避免飞书暂时 5xx 让 workflow 永远卡住
+_NOTIFY_RETRY = RetryPolicy(maximum_attempts=5)
+
 
 def _select_runbook(alert: dict) -> str | None:
     """Phase 1 简单匹配：按告警名称关键词选 Runbook"""
@@ -56,14 +63,14 @@ class AlertWorkflow:
                 "send_feishu_alert_with_ai",
                 args=[alert_json, workflow_id, rca_json, risk_json],
                 start_to_close_timeout=timedelta(seconds=30),
-                retry_policy=RetryPolicy(maximum_attempts=3),
+                retry_policy=_NOTIFY_RETRY,
             )
         else:
             feishu_msg_id = await workflow.execute_activity(
                 "send_feishu_alert",
                 args=[alert_json, workflow_id],
                 start_to_close_timeout=timedelta(seconds=30),
-                retry_policy=RetryPolicy(maximum_attempts=3),
+                retry_policy=_NOTIFY_RETRY,
             )
 
         # 5. 等待审批信号（30 分钟超时）
@@ -77,11 +84,13 @@ class AlertWorkflow:
                 "write_audit",
                 args=[alert_json, workflow_id, "timeout", None, None, None, feishu_msg_id],
                 start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=_NOTIFY_RETRY,
             )
             await workflow.execute_activity(
                 "send_feishu_result",
                 args=[f"⏰ 告警 {event_id} 审批超时（30分钟），已跳过"],
                 start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=_NOTIFY_RETRY,
             )
             return "timeout"
 
@@ -90,18 +99,25 @@ class AlertWorkflow:
                 "write_audit",
                 args=[alert_json, workflow_id, "rejected", None, None, None, feishu_msg_id],
                 start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=_NOTIFY_RETRY,
             )
             await workflow.execute_activity(
                 "send_feishu_result",
                 args=[f"❌ 告警 {event_id} 已被拒绝"],
                 start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=_NOTIFY_RETRY,
             )
             return "rejected"
 
         # 6. 执行 Runbook（优先用 AI 推荐的，fallback 到关键词匹配）
         if plan_json:
             plan = json.loads(plan_json)
-            runbook_id = plan.get("runbook_id", _select_runbook(alert))
+            candidate = plan.get("runbook_id")
+            # LLM 给的 runbook_id 必须在白名单内，否则降级到关键词匹配
+            if candidate not in _KNOWN_RUNBOOKS:
+                workflow.logger.warning(f"LLM proposed unknown runbook {candidate!r}, falling back to keyword match")
+                candidate = _select_runbook(alert)
+            runbook_id = candidate
             runbook_params = json.dumps(plan.get("params", {"target_host": alert["host_ip"]}))
         else:
             runbook_id = _select_runbook(alert)
@@ -112,11 +128,13 @@ class AlertWorkflow:
                 "write_audit",
                 args=[alert_json, workflow_id, "unsupported", None, None, None, feishu_msg_id],
                 start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=_NOTIFY_RETRY,
             )
             await workflow.execute_activity(
                 "send_feishu_result",
                 args=[f"Unsupported alert {event_id}: no matching runbook"],
                 start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=_NOTIFY_RETRY,
             )
             return "unsupported"
 
@@ -132,6 +150,7 @@ class AlertWorkflow:
             "write_audit",
             args=[alert_json, workflow_id, "approved", runbook_id, runbook_params, exec_result_json, feishu_msg_id],
             start_to_close_timeout=timedelta(seconds=10),
+            retry_policy=_NOTIFY_RETRY,
         )
 
         # 8. 飞书通知结果
@@ -145,6 +164,7 @@ class AlertWorkflow:
             "send_feishu_result",
             args=[msg],
             start_to_close_timeout=timedelta(seconds=10),
+            retry_policy=_NOTIFY_RETRY,
         )
 
         return "approved"

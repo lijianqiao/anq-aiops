@@ -105,8 +105,16 @@ var severity_map = {
 // {EVENT.VALUE}: 0=OK/恢复, 1=PROBLEM
 var status_str = params.event_value === '0' ? 'recovery' : 'problem';
 
-// {EVENT.TIMESTAMP} 是 Unix 秒 → ISO 8601 (UTC)
-var ts_iso = new Date(parseInt(params.timestamp_unix, 10) * 1000).toISOString();
+// {EVENT.TIMESTAMP} 在某些 7.0 webhook 上下文不解析（params.timestamp_unix 会是字面量 "{EVENT.TIMESTAMP}"）
+// parseInt 得 NaN → new Date(NaN) → toISOString() 抛 RangeError
+// 解析失败时退回 webhook 触发时刻，AIOps 业务上对这点偏差不敏感
+var ts_iso;
+var unix = parseInt(params.timestamp_unix, 10);
+if (!isNaN(unix) && unix > 1000000000) {
+    ts_iso = new Date(unix * 1000).toISOString();
+} else {
+    ts_iso = new Date().toISOString();
+}
 
 var payload = {
     event_id: params.event_id,

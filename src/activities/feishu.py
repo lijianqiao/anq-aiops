@@ -6,7 +6,7 @@ import httpx
 from temporalio import activity
 
 from src.config import settings
-from src.models import Alert, RCAResult, RiskEvaluation
+from src.models import Alert
 
 _FEISHU_BASE = "https://open.feishu.cn/open-apis"
 
@@ -59,57 +59,98 @@ def _action_button(text: str, btn_type: str, workflow_id: str, action: str, aler
     }
 
 
+def _alert_header_elements(alert: Alert) -> list[dict]:
+    """卡片顶部告警事实区"""
+    return [
+        {
+            "tag": "div",
+            "fields": [
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**设备：**{alert.hostname}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**IP：**{alert.host_ip}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**级别：**{alert.severity}"}},
+                {"is_short": True, "text": {"tag": "lark_md", "content": f"**状态：**{alert.status}"}},
+            ],
+        },
+        {"tag": "div", "text": {"tag": "lark_md", "content": f"**告警：**{alert.event_name}"}},
+        {"tag": "div", "text": {"tag": "lark_md", "content": f"**详情：**{alert.message}"}},
+    ]
+
+
 def build_feishu_card(alert: Alert, workflow_id: str) -> dict:
-    """构造飞书 Interactive Card（IM v1 用，返回 card 本体，不含外层 msg_type 包装）"""
+    """无 AI 分析时的简卡（agent 失败 / 选 none 时用）"""
     emoji = _SEVERITY_EMOJI.get(alert.severity, "⚪")
+    elements = _alert_header_elements(alert)
+    elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**时间：**{alert.timestamp}"}})
+    elements.append({"tag": "hr"})
+    elements.append({
+        "tag": "action",
+        "actions": [
+            _action_button("批准执行", "primary", workflow_id, "approve", alert.event_id),
+            _action_button("拒绝", "danger", workflow_id, "reject", alert.event_id),
+        ],
+    })
     return {
         "header": {
             "title": {"tag": "plain_text", "content": f"{emoji} AIOps 告警通知"},
             "template": "red" if alert.severity in ("disaster", "high") else "orange",
         },
-        "elements": [
-            {
-                "tag": "div",
-                "fields": [
-                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**设备：**{alert.hostname}"}},
-                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**IP：**{alert.host_ip}"}},
-                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**级别：**{alert.severity}"}},
-                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**状态：**{alert.status}"}},
-                ],
-            },
-            {"tag": "div", "text": {"tag": "lark_md", "content": f"**告警：**{alert.event_name}"}},
-            {"tag": "div", "text": {"tag": "lark_md", "content": f"**详情：**{alert.message}"}},
-            {"tag": "div", "text": {"tag": "lark_md", "content": f"**时间：**{alert.timestamp}"}},
-            {"tag": "hr"},
-            {
-                "tag": "action",
-                "actions": [
-                    _action_button("批准执行", "primary", workflow_id, "approve", alert.event_id),
-                    _action_button("拒绝", "danger", workflow_id, "reject", alert.event_id),
-                ],
-            },
-        ],
+        "elements": elements,
     }
 
 
-def build_feishu_card_with_ai(alert: Alert, workflow_id: str, rca: RCAResult, risk: RiskEvaluation) -> dict:
-    """构造带 AI 分析区块的飞书卡片（同样返回 card 本体）"""
+def _format_trace(trace: list[dict], max_entries: int = 8) -> str:
+    """把 agent trace 渲染成简短的 markdown 列表"""
+    if not trace:
+        return "_（无诊断步骤）_"
+    lines = []
+    for step in trace[:max_entries]:
+        tool = step.get("tool", "?")
+        if tool == "propose_action":
+            continue  # 终止工具不展示
+        args = step.get("args") or {}
+        # 摘要 args，避免太长
+        args_str = ", ".join(f"{k}={v}" for k, v in args.items() if k != "host")
+        if not args_str:
+            args_str = "—"
+        preview = (step.get("result_preview") or "").replace("\n", " ")[:80]
+        lines.append(f"• `{tool}({args_str})` → {preview}")
+    if not lines:
+        return "_（直接给出结论，无诊断步骤）_"
+    return "\n".join(lines)
+
+
+def build_feishu_card_with_agent(alert: Alert, workflow_id: str, plan: dict, trace: list[dict]) -> dict:
+    """带 agent 诊断结果的卡片：展示推理 + 工具轨迹 + 计划"""
     emoji = _SEVERITY_EMOJI.get(alert.severity, "⚪")
-    confidence_pct = f"{int(rca.confidence * 100)}%"
-    risk_label = "🟢 低风险" if risk.risk_score < 0.4 else "🟡 中风险" if risk.risk_score < 0.7 else "🔴 高风险"
+
+    confidence = float(plan.get("confidence") or 0)
+    confidence_pct = f"{int(confidence * 100)}%"
+    risk_level = plan.get("risk_level", "medium")
+    risk_label = {"low": "🟢 低风险", "medium": "🟡 中风险", "high": "🔴 高风险"}.get(risk_level, "🟡 中风险")
+
+    runbook_id = plan.get("runbook_id", "")
+    params = plan.get("params") or {}
+    reasoning = plan.get("reasoning", "")
 
     ai_section = {
         "tag": "div",
         "text": {
             "tag": "lark_md",
             "content": (
-                f"**🤖 AI 分析：**\n"
-                f"根因：{rca.root_cause}\n"
-                f"置信度：{confidence_pct}\n"
-                f"建议 Runbook：`{rca.recommended_runbook}`\n"
-                f"参数：`{rca.params}`\n"
-                f"风险：{risk_label}"
+                f"**🤖 AI 诊断：**\n"
+                f"结论：{reasoning}\n"
+                f"置信度：{confidence_pct} | 风险：{risk_label}\n"
+                f"建议 Runbook：`{runbook_id}`\n"
+                f"参数：`{params}`"
             ),
+        },
+    }
+
+    trace_section = {
+        "tag": "div",
+        "text": {
+            "tag": "lark_md",
+            "content": f"**🔍 诊断步骤：**\n{_format_trace(trace)}",
         },
     }
 
@@ -117,7 +158,7 @@ def build_feishu_card_with_ai(alert: Alert, workflow_id: str, rca: RCAResult, ri
         _action_button("按建议执行", "primary", workflow_id, "approve", alert.event_id),
         _action_button("拒绝", "danger", workflow_id, "reject", alert.event_id),
     ]
-    if risk.risk_score >= 0.7:
+    if risk_level == "high":
         actions.insert(1, _action_button("⚠️ 高风险 - 人工处理", "default", workflow_id, "reject", alert.event_id))
 
     return {
@@ -126,19 +167,11 @@ def build_feishu_card_with_ai(alert: Alert, workflow_id: str, rca: RCAResult, ri
             "template": "red" if alert.severity in ("disaster", "high") else "orange",
         },
         "elements": [
-            {
-                "tag": "div",
-                "fields": [
-                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**设备：**{alert.hostname}"}},
-                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**IP：**{alert.host_ip}"}},
-                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**级别：**{alert.severity}"}},
-                    {"is_short": True, "text": {"tag": "lark_md", "content": f"**状态：**{alert.status}"}},
-                ],
-            },
-            {"tag": "div", "text": {"tag": "lark_md", "content": f"**告警：**{alert.event_name}"}},
-            {"tag": "div", "text": {"tag": "lark_md", "content": f"**详情：**{alert.message}"}},
+            *_alert_header_elements(alert),
             {"tag": "hr"},
             ai_section,
+            {"tag": "hr"},
+            trace_section,
             {"tag": "hr"},
             {"tag": "action", "actions": actions},
         ],
@@ -185,19 +218,20 @@ async def _post_im_message(*, msg_type: str, content: dict) -> str:
 
 @activity.defn
 async def send_feishu_alert(alert_json: str, workflow_id: str) -> str:
-    """推送告警卡片到飞书，返回 message_id"""
+    """推送告警简卡（不含 AI 分析），返回 message_id"""
     alert = Alert.model_validate_json(alert_json)
     card = build_feishu_card(alert, workflow_id)
     return await _post_im_message(msg_type="interactive", content=card)
 
 
 @activity.defn
-async def send_feishu_alert_with_ai(alert_json: str, workflow_id: str, rca_json: str, risk_json: str) -> str:
-    """推送带 AI 分析的告警卡片到飞书，返回 message_id"""
+async def send_feishu_alert_with_agent(alert_json: str, workflow_id: str, agent_output_json: str) -> str:
+    """推送带 ReAct agent 诊断结果的卡片"""
     alert = Alert.model_validate_json(alert_json)
-    rca = RCAResult.model_validate_json(rca_json)
-    risk = RiskEvaluation.model_validate_json(risk_json)
-    card = build_feishu_card_with_ai(alert, workflow_id, rca, risk)
+    agent_output = json.loads(agent_output_json)
+    plan = agent_output.get("plan") or {}
+    trace = agent_output.get("trace") or []
+    card = build_feishu_card_with_agent(alert, workflow_id, plan, trace)
     return await _post_im_message(msg_type="interactive", content=card)
 
 

@@ -58,6 +58,16 @@ class LLMRouter:
             logger.error(f"Fallback LLM failed: {e}")
             raise LLMUnavailable("Both primary and fallback LLM failed") from e
 
+    def select_client_for_agent(self) -> LLMClient:
+        """给 ReAct agent 用：返回当前可用的 client（先主后备）。
+
+        Agent 的多轮交互需要全程用同一个 client（保持 conversation 一致），
+        所以这里只在开头选一次 client，不在 turn 之间切换。
+        """
+        if self.circuit_breaker is None or self._primary_allowed():
+            return self.primary
+        return self.fallback
+
     def _primary_allowed(self) -> bool:
         try:
             self.circuit_breaker.check()

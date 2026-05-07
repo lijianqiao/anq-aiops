@@ -61,13 +61,17 @@ class RCAResult(BaseModel):
 
 
 class ActionPlan(BaseModel):
-    """执行计划"""
+    """执行计划（ReAct agent 输出）"""
 
     runbook_id: str
     params: dict
     risk_level: str
     requires_approval: bool
     reasoning: str
+    # ReAct agent 调用工具的轨迹（每条含 turn / tool / args / result_preview 等）
+    # 用于飞书卡片展示 + 审计回溯，不影响执行逻辑
+    trace: list[dict] = []
+    confidence: float = 0.0
 
 
 class RiskEvaluation(BaseModel):

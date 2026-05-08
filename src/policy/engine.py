@@ -71,3 +71,85 @@ def _match_condition(condition: dict, ctx: dict) -> bool:
             if actual != expected:
                 return False
     return True
+
+
+# ---- evaluate_policy 主流程 ----
+
+import yaml  # noqa: E402
+
+from src.config import settings  # noqa: E402
+from src.models import Decision, PolicyResult  # noqa: E402
+from src.policy.host_tiers import lookup_tier  # noqa: E402
+
+
+def _build_context(*, runbook_id: str, params: dict, alert: dict, plan: dict) -> dict:
+    """组装 condition 评估时的扁平 ctx"""
+    params = params or {}
+    alert = alert or {}
+    plan = plan or {}
+    return {
+        "runbook_id": runbook_id,
+        "params": params,
+        "alert": alert,
+        "plan": plan,
+        # 顶层快捷字段（规则常用，避免每次写 plan.xxx）
+        "risk_level": plan.get("risk_level"),
+        "confidence": plan.get("confidence", 0),
+        "host_ip": params.get("target_host"),
+        "host_tier": lookup_tier(params.get("target_host")),
+    }
+
+
+def _load_policies() -> list[dict]:
+    """读 yaml 配置，返回 policies 列表"""
+    with open(settings.policy_config_path, encoding="utf-8") as f:
+        data = yaml.safe_load(f) or {}
+    return data.get("policies") or []
+
+
+def _match_all_conditions(conditions: list[dict], ctx: dict) -> bool:
+    """conditions 列表里每条都要匹配（AND）"""
+    return all(_match_condition(c, ctx) for c in conditions)
+
+
+def evaluate_policy(*, runbook_id: str, params: dict, alert: dict, plan: dict) -> PolicyResult:
+    """三段式评估：deny → require_approval → allow → default(approval)
+
+    任何阶段第一个匹配的规则即返回。
+    """
+    policies = _load_policies()
+    ctx = _build_context(runbook_id=runbook_id, params=params, alert=alert, plan=plan)
+
+    # 阶段 1: DENY 优先
+    for p in policies:
+        if p.get("effect") == "deny" and _match_all_conditions(p.get("conditions") or [], ctx):
+            return PolicyResult(
+                decision=Decision.DENY,
+                matched_policy=p.get("name", "unnamed"),
+                reason=p.get("description", ""),
+            )
+
+    # 阶段 2: APPROVAL_REQUIRED
+    for p in policies:
+        if p.get("effect") == "require_approval" and _match_all_conditions(p.get("conditions") or [], ctx):
+            return PolicyResult(
+                decision=Decision.APPROVAL_REQUIRED,
+                matched_policy=p.get("name", "unnamed"),
+                reason=p.get("description", ""),
+            )
+
+    # 阶段 3: ALLOW
+    for p in policies:
+        if p.get("effect") == "allow" and _match_all_conditions(p.get("conditions") or [], ctx):
+            return PolicyResult(
+                decision=Decision.ALLOW,
+                matched_policy=p.get("name", "unnamed"),
+                reason=p.get("description", ""),
+            )
+
+    # 默认：保守审批
+    return PolicyResult(
+        decision=Decision.APPROVAL_REQUIRED,
+        matched_policy="default",
+        reason="no allow rule matched, falling back to manual approval",
+    )

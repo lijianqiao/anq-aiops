@@ -1,0 +1,87 @@
+# Policy 规则配置
+#
+# Schema:
+#   policies:
+#     - name: <唯一规则名>
+#       description: <人类可读，会写到飞书卡片 / 审计>
+#       effect: allow | require_approval | deny
+#       conditions:
+#         - <field>: <value>           # 默认 eq
+#         - <field>: { in: [...] }     # 显式 operator
+#         - <field>: { gte: 0.9 }
+#
+# 评估顺序：所有 deny → 所有 require_approval → 所有 allow → 默认 approval
+# 同阶段内顺序遍历，第一个匹配的规则即返回。
+#
+# 可用 ctx 字段：
+#   runbook_id          str      "disk_cleanup" | "service_restart"
+#   params              dict     runbook 参数
+#   params.path         str      disk_cleanup 专用
+#   params.service_name str      service_restart 专用
+#   params.target_host  str      目标 IP
+#   risk_level          str      "low" | "medium" | "high"
+#   confidence          float    0.0~1.0
+#   host_tier           str      "production" | "staging" | "dev"
+#   host_ip             str      与 params.target_host 相同
+#   alert.severity      str      告警级别
+#
+# 可用 operator: eq(默认) / ne / in / not_in / gte / lte / gt / lt
+
+policies:
+  # ========== DENY: 永远不能自动执行的红线 ==========
+
+  - name: deny_root_path_cleanup
+    description: 禁止清理根目录或系统关键路径
+    effect: deny
+    conditions:
+      - runbook_id: disk_cleanup
+      - params.path: { in: ["/", "/etc", "/usr", "/bin", "/boot", "/lib"] }
+
+  - name: deny_database_restart
+    description: 数据库服务禁止自动重启（必须人工确认主从状态）
+    effect: deny
+    conditions:
+      - runbook_id: service_restart
+      - params.service_name: { in: ["mysql", "mysqld", "mariadb", "postgresql", "postgres", "mongodb", "redis"] }
+
+  # ========== APPROVAL_REQUIRED: 必须人工审批的场景 ==========
+
+  - name: production_requires_approval
+    description: 生产主机所有变更都必须人工审批
+    effect: require_approval
+    conditions:
+      - host_tier: production
+
+  - name: high_risk_requires_approval
+    description: agent 自评 risk=high 的强制人工审批
+    effect: require_approval
+    conditions:
+      - risk_level: high
+
+  - name: low_confidence_requires_approval
+    description: agent 置信度 < 0.9 转人工
+    effect: require_approval
+    conditions:
+      - confidence: { lt: 0.9 }
+
+  # ========== ALLOW: 可自动执行的低风险场景 ==========
+
+  - name: low_risk_disk_cleanup
+    description: 临时目录/日志/缓存清理 + 低风险 + 高置信度 → 自动
+    effect: allow
+    conditions:
+      - runbook_id: disk_cleanup
+      - params.path: { in: ["/tmp", "/var/tmp", "/var/log", "/var/cache", "/opt/cache"] }
+      - risk_level: low
+      - confidence: { gte: 0.9 }
+
+  - name: low_risk_stateless_service_restart
+    description: 无状态服务（nginx / redis-server）重启 + 低风险 + 高置信度 → 自动
+    effect: allow
+    conditions:
+      - runbook_id: service_restart
+      - params.service_name: { in: ["nginx", "redis-server"] }
+      - risk_level: low
+      - confidence: { gte: 0.9 }
+
+  # 不在以上任何规则匹配的告警，默认走人工审批

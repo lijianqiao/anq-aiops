@@ -89,3 +89,38 @@ async def test_agent_diagnose_handles_agent_failure():
     out = json.loads(result_json)
     assert out["plan"] is None
     assert out.get("agent_failed") is True
+
+
+@pytest.mark.asyncio
+async def test_agent_diagnose_injects_hermes_cases(monkeypatch: pytest.MonkeyPatch) -> None:
+    """agent_diagnose 应查询 Hermes 并把历史案例文本传给 router。"""
+    from src.activities import llm as llm_activity
+
+    plan = ActionPlan(
+        runbook_id="disk_cleanup",
+        params={"target_host": "192.168.198.130", "path": "/tmp", "min_age_days": 7},
+        risk_level="low",
+        requires_approval=True,
+        reasoning="参考历史案例后仍基于事实执行",
+        confidence=0.9,
+    )
+    fake_router = MagicMock()
+    fake_router.diagnose_with_agent = AsyncMock(return_value=AgentResult(plan=plan, trace=[]))
+
+    async def fake_query(repo, alert, limit):
+        assert limit == 3
+        return ["case-1"]
+
+    def fake_format(cases):
+        assert cases == ["case-1"]
+        return "历史案例：Disk usage > 90%"
+
+    monkeypatch.setattr(llm_activity, "llm_router", fake_router)
+    monkeypatch.setattr(llm_activity, "hermes_repo", object())
+    monkeypatch.setattr("src.activities.llm.hermes_knowledge.query_similar_cases", fake_query)
+    monkeypatch.setattr("src.activities.llm.hermes_knowledge.format_cases_for_prompt", fake_format)
+
+    await llm_activity.agent_diagnose(_alert_json())
+
+    fake_router.diagnose_with_agent.assert_awaited_once()
+    assert fake_router.diagnose_with_agent.call_args.kwargs["past_cases_text"] == "历史案例：Disk usage > 90%"

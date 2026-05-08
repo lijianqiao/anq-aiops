@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     max_pending_workflows: int = 50
     correlator_window_sec: int = 30
 
+    # Phase 7: Hermes 知识层
+    hermes_db_url: str = "postgresql://temporal:temporal@postgres:5432/temporal"
+
     # extra="ignore"：允许 .env 里残留旧字段（如 FEISHU_WEBHOOK_URL）不报错，方便平滑切换
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

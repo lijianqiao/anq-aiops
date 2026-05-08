@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
@@ -30,8 +31,11 @@ with workflow.unsafe.imports_passed_through():
     from src.llm import create_llm_router
     from src.workflows.alert_workflow import AlertWorkflow
 
+import src.activities.audit as audit_activities
 import src.activities.coordination as coordination_activities
 import src.activities.llm as llm_activities
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -50,6 +54,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     llm_router = create_llm_router()
     llm_activities.llm_router = llm_router
     coordination_activities.redis_client = redis_client
+    hermes_db = None
+    if settings.hermes_db_url:
+        from src.hermes.db import HermesDB
+        from src.hermes.repository import AuditRepository
+
+        hermes_db = HermesDB(dsn=settings.hermes_db_url)
+        try:
+            await hermes_db.connect()
+            await hermes_db.init_schema()
+            assert hermes_db.pool is not None
+            hermes_repo = AuditRepository(hermes_db.pool)
+            audit_activities.set_repo(hermes_repo)
+            llm_activities.hermes_repo = hermes_repo
+            logger.info("Hermes 知识层已就绪")
+        except Exception as exc:
+            await hermes_db.close()
+            hermes_db = None
+            audit_activities.set_repo(None)
+            llm_activities.hermes_repo = None
+            logger.warning(f"Hermes 初始化失败，将以无知识层模式运行：{exc}")
 
     worker = Worker(
         temporal_client,
@@ -81,6 +105,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     worker_task.cancel()
     consumer_task.cancel()
     await asyncio.gather(worker_task, consumer_task, return_exceptions=True)
+    if hermes_db is not None:
+        await hermes_db.close()
     await redis_client.aclose()
 
 

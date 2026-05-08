@@ -30,6 +30,22 @@ services:
       postgres:
         condition: service_healthy
 
+  init-hermes-schema:
+    image: postgres:17-alpine
+    profiles:
+      - manual
+    environment:
+      PGPASSWORD: temporal
+    command:
+      - sh
+      - -lc
+      - psql -h postgres -U temporal -d temporal -f /schema/schema.sql
+    volumes:
+      - ./src/hermes/schema.sql:/schema/schema.sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   temporal-ui:
     image: temporalio/ui:2.33.0
     environment:

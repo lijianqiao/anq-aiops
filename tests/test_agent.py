@@ -1,4 +1,10 @@
-"""ReAct DiagnosticAgent 单元测试"""
+"""
+@Author: li
+@Email: lijianqiao2906@live.com
+@FileName: test_agent.py
+@DateTime: 2026-05-08 23:26:00
+@Docs: 测试 ReAct DiagnosticAgent 工具调用、终止条件和 Hermes prompt 注入
+"""
 
 import json
 from datetime import datetime
@@ -150,3 +156,31 @@ async def test_agent_handles_none_runbook():
     agent = DiagnosticAgent(client, max_turns=5)
     result = await agent.diagnose(_alert())
     assert result.plan is None
+
+
+@pytest.mark.asyncio
+async def test_agent_includes_past_cases_in_system_prompt():
+    """Hermes 历史案例应注入 system prompt 第一条消息。"""
+    client = AsyncMock()
+    client.chat_with_tools.return_value = {
+        "content": None,
+        "tool_calls": [
+            _tool_call("propose_action", {
+                "runbook_id": "disk_cleanup",
+                "params": {},
+                "reasoning": "参考历史但仍需工具事实",
+                "confidence": 0.9,
+                "risk_level": "low",
+            }),
+        ],
+    }
+    past_cases_text = "1. [2026-05-01] `Disk usage > 90%` on 1.1.1.1\n   - Runbook: disk_cleanup\n"
+    agent = DiagnosticAgent(client, max_turns=2, past_cases_text=past_cases_text)
+
+    await agent.diagnose(_alert())
+
+    sent_messages = client.chat_with_tools.call_args.kwargs["messages"]
+    system_message = sent_messages[0]
+    assert system_message["role"] == "system"
+    assert "Past Experiences" in system_message["content"]
+    assert "Disk usage > 90%" in system_message["content"]

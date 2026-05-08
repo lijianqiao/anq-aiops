@@ -78,7 +78,7 @@ class LLMRouter:
             return self.primary
         return self.fallback
 
-    async def diagnose_with_agent(self, alert: Alert, max_turns: int = 5) -> AgentResult:
+    async def diagnose_with_agent(self, alert: Alert, max_turns: int = 5, past_cases_text: str = "") -> AgentResult:
         """使用 ReAct Agent 诊断告警，主模型失败时重试备用模型。
 
         Agent 的多轮 tool calling 会绑定单个客户端；因此失败后用备用模型重新开始一次诊断，
@@ -86,7 +86,11 @@ class LLMRouter:
         """
         if self.circuit_breaker is None or self._primary_allowed():
             try:
-                result = await DiagnosticAgent(self.primary, max_turns=max_turns).diagnose(alert)
+                result = await DiagnosticAgent(
+                    self.primary,
+                    max_turns=max_turns,
+                    past_cases_text=past_cases_text,
+                ).diagnose(alert)
                 if self.circuit_breaker:
                     self.circuit_breaker.record_success()
                 return result
@@ -96,7 +100,11 @@ class LLMRouter:
                     self.circuit_breaker.record_failure()
 
         try:
-            return await DiagnosticAgent(self.fallback, max_turns=max_turns).diagnose(alert)
+            return await DiagnosticAgent(
+                self.fallback,
+                max_turns=max_turns,
+                past_cases_text=past_cases_text,
+            ).diagnose(alert)
         except Exception as exc:
             logger.error(f"Fallback Agent LLM failed: {exc}")
             raise LLMUnavailable("主备模型均无法完成 Agent 诊断") from exc

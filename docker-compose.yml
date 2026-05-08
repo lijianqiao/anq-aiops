@@ -76,7 +76,7 @@ services:
       META_AIOPS_URL: http://aiops:8000
       META_TEMPORAL_ADDR: ${META_TEMPORAL_ADDR:-}
       META_REDIS_ADDR: redis:6379
-      META_INTERVAL_SEC: "60"
+      META_INTERVAL_SEC: ${META_INTERVAL_SEC:-60}
       META_FEISHU_WEBHOOK_URL: ${META_FEISHU_WEBHOOK_URL:-}
       LLM_PRIMARY_BASE_URL: ${LLM_PRIMARY_BASE_URL:-}
     # 故意不加 depends_on：meta-monitor 应先于主应用发现故障，而不是等待主应用健康。

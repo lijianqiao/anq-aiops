@@ -14,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from src.bus.producer import produce_alert
 from src.config import settings
+from src.coordination.rate_limit import RateLimiter, SystemOverloadGuard
 from src.models import Alert
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,15 @@ def _require_zabbix_auth(request: Request) -> None:
 async def zabbix_webhook(alert: Alert, request: Request) -> dict[str, Any]:
     _require_zabbix_auth(request)
     redis = request.app.state.redis
+
+    guard = SystemOverloadGuard(redis, max_pending=settings.max_pending_workflows)
+    if await guard.is_overloaded():
+        raise HTTPException(status_code=503, detail="AIOps 已过载，请转人工处理")
+
+    limiter = RateLimiter(redis, "zabbix_alerts", limit=settings.alert_rate_limit_per_min, window_sec=60)
+    if not await limiter.try_acquire():
+        raise HTTPException(status_code=429, detail="告警风暴限流已触发，告警已丢弃")
+
     msg_id = await produce_alert(redis, alert)
 
     if msg_id is None:

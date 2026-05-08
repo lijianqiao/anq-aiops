@@ -69,6 +69,12 @@ class AlertWorkflow:
 
     @workflow.run
     async def run(self, alert_json: str) -> str:
+        try:
+            return await self._run_inner(alert_json)
+        finally:
+            await self._decr_pending_gauge()
+
+    async def _run_inner(self, alert_json: str) -> str:
         alert = cast(dict[str, Any], json.loads(alert_json))
         event_id = alert["event_id"]
         workflow_id = workflow.info().workflow_id
@@ -180,13 +186,43 @@ class AlertWorkflow:
                 )
                 return "rejected"
 
-        # 8. 执行 Runbook
-        exec_result_json = await workflow.execute_activity(
-            "execute_runbook",
-            args=[runbook_id, runbook_params],
-            start_to_close_timeout=timedelta(minutes=10),
-            retry_policy=RetryPolicy(maximum_attempts=1),
+        # 8. 执行 Runbook：同 host 同时只允许一个修复动作，避免并发误操作
+        mutex_target = f"host:{alert['host_ip']}"
+        mutex_token = await workflow.execute_activity(
+            "try_acquire_mutex",
+            args=[mutex_target, 600],
+            start_to_close_timeout=timedelta(seconds=10),
+            retry_policy=RetryPolicy(maximum_attempts=2),
         )
+        if not mutex_token:
+            await workflow.execute_activity(
+                "write_audit",
+                args=[alert_json, workflow_id, "skipped_mutex", runbook_id, runbook_params, None, feishu_msg_id],
+                start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=_NOTIFY_RETRY,
+            )
+            await workflow.execute_activity(
+                "send_feishu_result",
+                args=[f"⚠️ 告警 {event_id} 跳过自动执行：目标 {alert['host_ip']} 正被另一个告警处理"],
+                start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=_NOTIFY_RETRY,
+            )
+            return "skipped_mutex"
+
+        try:
+            exec_result_json = await workflow.execute_activity(
+                "execute_runbook",
+                args=[runbook_id, runbook_params],
+                start_to_close_timeout=timedelta(minutes=10),
+                retry_policy=RetryPolicy(maximum_attempts=1),
+            )
+        finally:
+            await workflow.execute_activity(
+                "release_mutex",
+                args=[mutex_target, mutex_token],
+                start_to_close_timeout=timedelta(seconds=5),
+                retry_policy=RetryPolicy(maximum_attempts=2),
+            )
 
         # 9. 写审计：自动执行用 auto_approved 标签和人工审批的 approved 区分开
         decision_label = "auto_approved" if auto_execute else "approved"
@@ -219,6 +255,17 @@ class AlertWorkflow:
         return decision_label
 
     # ---------- helpers ----------
+
+    async def _decr_pending_gauge(self) -> None:
+        """workflow 结束时清理 pending workflow 计数，失败不影响主流程。"""
+        try:
+            await workflow.execute_activity(
+                "decr_pending_gauge",
+                start_to_close_timeout=timedelta(seconds=5),
+                retry_policy=RetryPolicy(maximum_attempts=2),
+            )
+        except Exception:
+            workflow.logger.warning("decr_pending_gauge failed")
 
     async def _safe_agent_call(self, alert_json: str) -> str:
         """调用 agent_diagnose，失败时返回标记 agent_failed=True 的占位 JSON"""

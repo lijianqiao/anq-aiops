@@ -93,10 +93,33 @@ async def mock_execute_runbook(runbook_id: str, params_json: str) -> str:
     })
 
 
+@activity.defn(name="decr_pending_gauge")
+async def mock_decr_pending_gauge() -> None:
+    pass
+
+
+@activity.defn(name="try_acquire_mutex")
+async def mock_try_acquire_mutex(target: str, ttl: int = 600) -> str:
+    return "test-token"
+
+
+@activity.defn(name="release_mutex")
+async def mock_release_mutex(target: str, token: str) -> None:
+    pass
+
+
+COORDINATION_ACTIVITIES: Sequence[Callable[..., Any]] = [
+    mock_decr_pending_gauge,
+    mock_try_acquire_mutex,
+    mock_release_mutex,
+]
+
+
 ALL_ACTIVITIES: Sequence[Callable[..., Any]] = [
     mock_agent_diagnose, mock_evaluate_policy,
     mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
     mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+    *COORDINATION_ACTIVITIES,
 ]
 
 
@@ -155,6 +178,7 @@ async def test_workflow_falls_back_when_agent_fails():
             mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
             mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
             mock_evaluate_policy,
+            *COORDINATION_ACTIVITIES,
         ],
     ):
         handle = await env.client.start_workflow(
@@ -202,6 +226,7 @@ async def test_workflow_unsupported_when_no_runbook_match():
             mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
             mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
             mock_evaluate_policy,
+            *COORDINATION_ACTIVITIES,
         ],
     ):
         handle = await env.client.start_workflow(
@@ -232,6 +257,7 @@ async def test_workflow_handles_agent_choosing_none():
             mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
             mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
             mock_evaluate_policy,
+            *COORDINATION_ACTIVITIES,
         ],
     ):
         handle = await env.client.start_workflow(
@@ -264,6 +290,7 @@ async def test_workflow_denied_by_policy():
             mock_agent_diagnose, deny_policy,
             mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
             mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+            *COORDINATION_ACTIVITIES,
         ],
     ):
         handle = await env.client.start_workflow(
@@ -298,6 +325,7 @@ async def test_workflow_auto_executes_in_live_mode():
                     mock_agent_diagnose, allow_policy,
                     mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
                     mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+                    *COORDINATION_ACTIVITIES,
                 ],
             ):
                 handle = await env.client.start_workflow(
@@ -334,6 +362,7 @@ async def test_workflow_shadow_mode_does_not_auto_execute():
                     mock_agent_diagnose, allow_policy,
                     mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
                     mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+                    *COORDINATION_ACTIVITIES,
                 ],
             ):
                 handle = await env.client.start_workflow(
@@ -348,3 +377,38 @@ async def test_workflow_shadow_mode_does_not_auto_execute():
                 assert result == "approved"  # 经过人工审批的 approved，不是 auto_approved
         finally:
             settings.aiops_mode = original_mode
+
+
+@pytest.mark.asyncio
+async def test_workflow_skips_when_mutex_held():
+    """mutex 已被其他 workflow 持有时，应跳过执行并写审计。"""
+
+    @activity.defn(name="try_acquire_mutex")
+    async def held_mutex(target: str, ttl: int = 600) -> str:
+        return ""
+
+    @activity.defn(name="execute_runbook")
+    async def execute_should_not_run(runbook_id: str, params_json: str) -> str:
+        raise AssertionError("mutex 持有时不应执行 runbook")
+
+    async with await WorkflowEnvironment.start_time_skipping() as env, Worker(
+        env.client,
+        task_queue=TASK_QUEUE,
+        workflows=[AlertWorkflow],
+        activities=[
+            mock_agent_diagnose, mock_evaluate_policy,
+            mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
+            mock_send_feishu_result, mock_write_audit, execute_should_not_run,
+            mock_decr_pending_gauge, held_mutex, mock_release_mutex,
+        ],
+    ):
+        handle = await env.client.start_workflow(
+            AlertWorkflow.run,
+            _alert_json(),
+            id="test-mutex-held",
+            task_queue=TASK_QUEUE,
+        )
+        await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=True))
+        result = await handle.result()
+
+    assert result == "skipped_mutex"

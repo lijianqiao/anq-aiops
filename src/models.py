@@ -10,7 +10,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class Alert(BaseModel):
@@ -114,3 +114,31 @@ class PolicyResult(BaseModel):
     decision: Decision
     matched_policy: str  # 命中的 rule name；默认决策时为 "default"
     reason: str  # 命中理由（来自 rule description）
+
+
+class AlertGroup(BaseModel):
+    """告警关联组：根因告警和衍生告警。
+
+    Redis 使用 `group_id` 作为主键，默认等于根因告警的 `event_id`。
+    """
+
+    root_alert: Alert
+    derived_alerts: list[Alert] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=datetime.now)
+
+    @property
+    def group_id(self) -> str:
+        """返回关联组 ID。"""
+        return self.root_alert.event_id
+
+    @property
+    def root_host(self) -> str:
+        """返回根因告警所在主机 IP。"""
+        return self.root_alert.host_ip
+
+    def summary(self) -> str:
+        """返回简短摘要，供 LLM 判断告警关联关系。"""
+        lines = [f"[ROOT] {self.root_alert.host_ip} {self.root_alert.event_name}"]
+        for alert in self.derived_alerts:
+            lines.append(f"[DERIVED] {alert.host_ip} {alert.event_name}")
+        return "\n".join(lines)

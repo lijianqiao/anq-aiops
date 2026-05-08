@@ -1,3 +1,11 @@
+"""
+@Author: li
+@Email: lijianqiao2906@live.com
+@FileName: config.py
+@DateTime: 2026-05-08 22:50:00
+@Docs: 定义应用环境变量配置
+"""
+
 from pydantic_settings import BaseSettings
 
 
@@ -46,6 +54,11 @@ class Settings(BaseSettings):
     staging_hosts: str = ""
     # Policy 配置文件路径（容器内绝对路径）
     policy_config_path: str = "/app/src/policy/policies.yaml"
+
+    # Phase 4: 多 Agent 协同
+    alert_rate_limit_per_min: int = 100
+    max_pending_workflows: int = 50
+    correlator_window_sec: int = 30
 
     # extra="ignore"：允许 .env 里残留旧字段（如 FEISHU_WEBHOOK_URL）不报错，方便平滑切换
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}

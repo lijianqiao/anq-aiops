@@ -6,9 +6,9 @@ import pytest
 import redis.asyncio as aioredis
 from redis.exceptions import ResponseError
 
-from src.bus.consumer import STREAM_KEY, ack_alert, consume_alert, reclaim_pending_alert
+from src.bus.consumer import STREAM_KEY, ack_alert, consume_alert, handle_alert_message, reclaim_pending_alert
 from src.bus.producer import produce_alert
-from src.models import Alert
+from src.models import Alert, AlertGroup
 
 
 @pytest.fixture
@@ -97,3 +97,88 @@ async def test_reclaim_pending_alert(alert: Alert) -> None:
     reclaimed_alert, msg_id = result
     assert reclaimed_alert.event_id == alert.event_id
     assert msg_id == "1-0"
+
+
+@pytest.mark.asyncio
+async def test_handle_alert_message_suppresses_derived_alert(alert: Alert, monkeypatch: pytest.MonkeyPatch) -> None:
+    """关联到已有根因组的衍生告警应直接 ack，不启动 workflow。"""
+    redis = MagicMock()
+    redis.xack = AsyncMock()
+    temporal = MagicMock()
+    temporal.start_workflow = AsyncMock()
+    gauge = MagicMock()
+    gauge.incr = AsyncMock()
+    root = AlertGroup(root_alert=Alert(
+        event_id="root",
+        event_name="Disk full",
+        severity="high",
+        hostname=alert.hostname,
+        host_ip=alert.host_ip,
+        trigger_id="root",
+        message="Disk usage 95%",
+        timestamp=alert.timestamp,
+        status="problem",
+    ))
+    root.derived_alerts.append(alert)
+
+    async def fake_correlate(new_alert: Alert, store: object) -> AlertGroup:
+        return root
+
+    monkeypatch.setattr("src.bus.consumer.correlate", fake_correlate)
+
+    result = await handle_alert_message(redis, temporal, alert, "1-0", MagicMock(), gauge)
+
+    assert result == "suppressed"
+    temporal.start_workflow.assert_not_called()
+    gauge.incr.assert_not_called()
+    redis.xack.assert_awaited_once_with(STREAM_KEY, "aiops-workers", "1-0")
+
+
+@pytest.mark.asyncio
+async def test_handle_alert_message_increments_gauge_for_root_alert(alert: Alert, monkeypatch: pytest.MonkeyPatch) -> None:
+    """根因告警启动 workflow 后应增加 pending workflow 计数。"""
+    redis = MagicMock()
+    redis.xack = AsyncMock()
+    temporal = MagicMock()
+    temporal.start_workflow = AsyncMock()
+    gauge = MagicMock()
+    gauge.incr = AsyncMock()
+
+    async def fake_correlate(new_alert: Alert, store: object) -> AlertGroup:
+        return AlertGroup(root_alert=new_alert)
+
+    monkeypatch.setattr("src.bus.consumer.correlate", fake_correlate)
+
+    result = await handle_alert_message(redis, temporal, alert, "1-0", MagicMock(), gauge)
+
+    assert result == "started"
+    temporal.start_workflow.assert_awaited_once()
+    gauge.incr.assert_awaited_once()
+    redis.xack.assert_awaited_once_with(STREAM_KEY, "aiops-workers", "1-0")
+
+
+@pytest.mark.asyncio
+async def test_handle_alert_message_decrements_gauge_when_start_fails(
+    alert: Alert,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """workflow 启动失败时应回滚 pending 计数，消息保持未 ack 等待重投。"""
+    redis = MagicMock()
+    redis.xack = AsyncMock()
+    temporal = MagicMock()
+    temporal.start_workflow = AsyncMock(side_effect=RuntimeError("Temporal 不可用"))
+    gauge = MagicMock()
+    gauge.incr = AsyncMock()
+    gauge.decr = AsyncMock()
+
+    async def fake_correlate(new_alert: Alert, store: object) -> AlertGroup:
+        return AlertGroup(root_alert=new_alert)
+
+    monkeypatch.setattr("src.bus.consumer.correlate", fake_correlate)
+
+    with pytest.raises(RuntimeError):
+        await handle_alert_message(redis, temporal, alert, "1-0", MagicMock(), gauge)
+
+    gauge.incr.assert_awaited_once()
+    gauge.decr.assert_awaited_once()
+    redis.xack.assert_not_called()

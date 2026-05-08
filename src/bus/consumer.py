@@ -9,12 +9,16 @@
 import asyncio
 import contextlib
 import logging
+from typing import Any
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI
 from temporalio.exceptions import WorkflowAlreadyStartedError
 
 from src.config import settings
+from src.coordination.rate_limit import PendingWorkflowGauge
+from src.correlator.correlate import correlate
+from src.correlator.groups import GroupStore
 from src.models import Alert
 
 STREAM_KEY = "aiops:alerts"
@@ -77,10 +81,53 @@ async def ack_alert(client: aioredis.Redis, group: str, msg_id: str) -> None:
     await client.xack(STREAM_KEY, group, msg_id)
 
 
+async def handle_alert_message(
+    redis: aioredis.Redis,
+    temporal: Any,
+    alert: Alert,
+    msg_id: str,
+    store: GroupStore,
+    gauge: PendingWorkflowGauge,
+) -> str:
+    """处理单条告警消息：关联、抑制衍生告警或启动根因 workflow。"""
+    group = await correlate(alert, store)
+    if alert.event_id != group.root_alert.event_id:
+        await ack_alert(redis, "aiops-workers", msg_id)
+        logger.info(f"衍生告警 {alert.event_id} 已抑制，根因告警为 {group.root_alert.event_id}")
+        return "suppressed"
+
+    workflow_id = f"alert-{alert.event_id}"
+    gauge_incremented = False
+    try:
+        await gauge.incr()
+        gauge_incremented = True
+        await temporal.start_workflow(
+            "AlertWorkflow",
+            alert.model_dump_json(),
+            id=workflow_id,
+            task_queue=settings.temporal_task_queue,
+        )
+        await ack_alert(redis, "aiops-workers", msg_id)
+        logger.info(f"Workflow started: {workflow_id}")
+        return "started"
+    except WorkflowAlreadyStartedError:
+        if gauge_incremented:
+            await gauge.decr()
+        await ack_alert(redis, "aiops-workers", msg_id)
+        logger.info(f"Workflow already exists, acked message: {workflow_id}")
+        return "already_started"
+    except Exception:
+        if gauge_incremented:
+            await gauge.decr()
+        raise
+
+
 async def start_consumer_loop(app: FastAPI) -> None:
     """持续消费 Redis Stream，触发 Temporal Workflow"""
     redis = app.state.redis
     temporal = app.state.temporal
+    store = GroupStore(redis, window_sec=settings.correlator_window_sec)
+    gauge = PendingWorkflowGauge(redis)
     with contextlib.suppress(Exception):
         await redis.xgroup_create("aiops:alerts", "aiops-workers", id="0", mkstream=True)
     logger.info("Consumer loop started")
@@ -91,19 +138,8 @@ async def start_consumer_loop(app: FastAPI) -> None:
         if result is None:
             continue
         alert, msg_id = result
-        workflow_id = f"alert-{alert.event_id}"
         try:
-            await temporal.start_workflow(
-                "AlertWorkflow",
-                alert.model_dump_json(),
-                id=workflow_id,
-                task_queue=settings.temporal_task_queue,
-            )
-            await ack_alert(redis, "aiops-workers", msg_id)
-            logger.info(f"Workflow started: {workflow_id}")
-        except WorkflowAlreadyStartedError:
-            await ack_alert(redis, "aiops-workers", msg_id)
-            logger.info(f"Workflow already exists, acked message: {workflow_id}")
+            await handle_alert_message(redis, temporal, alert, msg_id, store, gauge)
         except Exception as e:
             logger.error(f"Failed to start workflow for {alert.event_id}: {e}")
             # 不 ack，让 reclaim 重投；sleep 避免紧循环打满 CPU

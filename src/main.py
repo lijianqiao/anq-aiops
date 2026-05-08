@@ -22,6 +22,7 @@ from src.config import settings
 
 with workflow.unsafe.imports_passed_through():
     from src.activities.audit import write_audit
+    from src.activities.coordination import decr_pending_gauge, release_mutex, try_acquire_mutex
     from src.activities.feishu import send_feishu_alert, send_feishu_alert_with_agent, send_feishu_result
     from src.activities.llm import agent_diagnose
     from src.activities.policy import evaluate_policy_activity
@@ -29,6 +30,7 @@ with workflow.unsafe.imports_passed_through():
     from src.llm import create_llm_router
     from src.workflows.alert_workflow import AlertWorkflow
 
+import src.activities.coordination as coordination_activities
 import src.activities.llm as llm_activities
 
 
@@ -47,6 +49,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # 否则 consumer 拉到积压消息触发 workflow 时 llm_router 还是 None
     llm_router = create_llm_router()
     llm_activities.llm_router = llm_router
+    coordination_activities.redis_client = redis_client
 
     worker = Worker(
         temporal_client,
@@ -57,6 +60,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             execute_runbook, write_audit,
             agent_diagnose,
             evaluate_policy_activity,
+            decr_pending_gauge, try_acquire_mutex, release_mutex,
         ],
     )
     worker_task = asyncio.create_task(worker.run())

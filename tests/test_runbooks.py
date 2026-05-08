@@ -55,7 +55,9 @@ def test_run_ansible_uses_isolated_private_data_dir(
 
     assert result.success is True
     assert called["playbook"] == "disk_cleanup.yml"
-    assert called["inventory"] == "inventory.ini"
+    inventory_path = Path(called["inventory"])
+    assert inventory_path.name == "inventory.ini"
+    assert inventory_path.parent == Path(called["private_data_dir"])
     assert "cmdline" not in called
 
 

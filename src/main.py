@@ -15,6 +15,7 @@ with workflow.unsafe.imports_passed_through():
     from src.activities.audit import write_audit
     from src.activities.feishu import send_feishu_alert, send_feishu_alert_with_agent, send_feishu_result
     from src.activities.llm import agent_diagnose
+    from src.activities.policy import evaluate_policy_activity
     from src.activities.runbook import execute_runbook
     from src.llm import create_llm_router
     from src.workflows.alert_workflow import AlertWorkflow
@@ -46,6 +47,7 @@ async def lifespan(app: FastAPI):
             send_feishu_alert, send_feishu_alert_with_agent, send_feishu_result,
             execute_runbook, write_audit,
             agent_diagnose,
+            evaluate_policy_activity,
         ],
     )
     worker_task = asyncio.create_task(worker.run())
@@ -69,7 +71,7 @@ async def lifespan(app: FastAPI):
     await redis_client.aclose()
 
 
-app = FastAPI(title="AIOps Phase 2", lifespan=lifespan)
+app = FastAPI(title="AIOps Phase 3", lifespan=lifespan)
 app.include_router(webhook_router)
 
 

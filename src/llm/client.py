@@ -18,6 +18,9 @@ def _strip_json_fence(text: str) -> str:
 def _build_openai_messages(messages: list[dict[str, Any]]) -> list[ChatCompletionMessageParam]:
     """转 OpenAI 消息格式。支持 system/user/assistant/developer/tool 五种 role；
     assistant 可携带 tool_calls；tool 必须带 tool_call_id。
+
+    特殊处理：reasoning_content（DeepSeek-R1 / Qwen thinking 等推理模型的 vendor 扩展）
+    必须在多轮对话里原样传回，否则 API 会 400。
     """
     openai_messages: list[dict[str, Any]] = []
     for message in messages:
@@ -27,8 +30,12 @@ def _build_openai_messages(messages: list[dict[str, Any]]) -> list[ChatCompletio
 
         out: dict[str, Any] = {"role": role, "content": message.get("content")}
         # assistant 在 tool 调用回合 content 可以为 None，但要带 tool_calls
-        if role == "assistant" and message.get("tool_calls"):
-            out["tool_calls"] = message["tool_calls"]
+        if role == "assistant":
+            if message.get("tool_calls"):
+                out["tool_calls"] = message["tool_calls"]
+            # 推理模型的 reasoning_content 必须 roundtrip
+            if message.get("reasoning_content") is not None:
+                out["reasoning_content"] = message["reasoning_content"]
         if role == "tool":
             if "tool_call_id" not in message:
                 raise ValueError("tool message must include tool_call_id")
@@ -124,8 +131,15 @@ class OpenAICompatibleClient(LLMClient):
             timeout=timeout,
         )
         msg = response.choices[0].message
+        # 推理模型可能在 message 上加 reasoning_content；OpenAI SDK 把未知字段放
+        # 在 model_extra 里。提取出来后续 roundtrip 用。
+        reasoning_content = getattr(msg, "reasoning_content", None)
+        if reasoning_content is None:
+            extra = getattr(msg, "model_extra", None) or {}
+            reasoning_content = extra.get("reasoning_content")
         return {
             "content": msg.content,
+            "reasoning_content": reasoning_content,
             "tool_calls": [
                 {
                     "id": tc.id,

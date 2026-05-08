@@ -14,12 +14,22 @@ _NOTIFY_RETRY = RetryPolicy(maximum_attempts=5)
 
 
 def _select_runbook(alert: dict) -> str | None:
-    """Agent 失败时的 fallback：按告警名称关键词选 Runbook"""
-    name = alert.get("event_name", "").lower()
-    if "disk" in name or "磁盘" in name:
+    """Agent 失败时的 fallback：从 event_name + message 用关键词选 Runbook
+
+    覆盖 Zabbix 7.0 模板默认触发器名（如 "Linux: FS [/]: Space is critically low"）
+    """
+    text = (alert.get("event_name", "") + " " + alert.get("message", "")).lower()
+
+    # 磁盘类：Zabbix 模板叫 "FS", "Space", "filesystem"，自定义可能叫 "disk", "磁盘"
+    disk_keywords = ("disk", "磁盘", " fs ", "filesystem", "vfs", "space", "pused", "/tmp", "/var")
+    if any(k in text for k in disk_keywords):
         return "disk_cleanup"
-    if "service" in name or "进程" in name or "process" in name:
+
+    # 服务类
+    svc_keywords = ("service", "进程", "process", " down ", "failed", "not running")
+    if any(k in text for k in svc_keywords):
         return "service_restart"
+
     return None
 
 

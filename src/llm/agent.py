@@ -122,11 +122,13 @@ class DiagnosticAgent:
                 )
 
             # 把 assistant 这轮回复加进对话历史（必须，否则 tool 消息没法接 tool_call_id）
+            # reasoning_content 是推理模型的 vendor 扩展，必须原样 roundtrip 否则 API 会 400
             messages.append(
                 {
                     "role": "assistant",
                     "content": response.get("content"),
                     "tool_calls": tool_calls,
+                    "reasoning_content": response.get("reasoning_content"),
                 }
             )
 

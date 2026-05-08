@@ -57,9 +57,7 @@ def test_feishu_alert_swallows_network_errors(
     monkeypatch.setenv("META_FEISHU_WEBHOOK_URL", "https://invalid.example.com/hook")
 
     with respx.mock() as mock:
-        mock.post("https://invalid.example.com/hook").mock(
-            side_effect=httpx.ConnectError("connection refused")
-        )
+        mock.post("https://invalid.example.com/hook").mock(side_effect=httpx.ConnectError("connection refused"))
         send_alert("test")
 
     captured = capsys.readouterr()
@@ -177,9 +175,7 @@ def test_probe_lark_ws_down() -> None:
     from meta_monitor.probes import probe_lark_ws
 
     with respx.mock() as mock:
-        mock.get("https://open.feishu.cn/open-apis/").mock(
-            side_effect=httpx.ConnectTimeout("timeout")
-        )
+        mock.get("https://open.feishu.cn/open-apis/").mock(side_effect=httpx.ConnectTimeout("timeout"))
         ok, msg = probe_lark_ws()
 
     assert ok is False

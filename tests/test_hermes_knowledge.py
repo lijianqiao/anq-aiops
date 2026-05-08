@@ -14,7 +14,12 @@ import asyncpg
 import pytest
 
 from src.hermes.db import HermesDB
-from src.hermes.knowledge import format_cases_for_prompt, query_similar_cases
+from src.hermes.knowledge import (
+    format_cases_for_prompt,
+    format_negative_cases,
+    query_negative_cases,
+    query_similar_cases,
+)
 from src.hermes.models import AuditRecordRead
 from src.models import Alert
 
@@ -104,6 +109,19 @@ def test_format_cases_marks_failed_attempts() -> None:
     assert "❌" in text
 
 
+def test_format_negative_cases_renders_feedback_reason() -> None:
+    """反例格式化应包含人工反馈原因。"""
+    case = _case(verify=False)
+    case.feedback_label = "rejected_wrongly"
+    case.feedback_reason = "path 应该是 /tmp"
+
+    text = format_negative_cases([case])
+
+    assert "避坑案例" in text
+    assert "rejected_wrongly" in text
+    assert "/tmp" in text
+
+
 @pytest.mark.asyncio
 async def test_query_similar_cases_uses_alert_content() -> None:
     """query_similar_cases 应用 alert 的事件名、消息和 host_ip 检索。"""
@@ -124,6 +142,22 @@ async def test_query_similar_cases_uses_alert_content() -> None:
             return [_case()]
 
     cases = await query_similar_cases(FakeRepo(), _alert(), limit=3)  # type: ignore[arg-type]
+
+    assert len(cases) == 1
+
+
+@pytest.mark.asyncio
+async def test_query_negative_cases_uses_feedback_repo() -> None:
+    """query_negative_cases 应使用 feedback repository 检索反例。"""
+
+    class FakeFeedbackRepo:
+        async def find_negative_cases(self, query: str, host_ip: str | None, limit: int) -> list[AuditRecordRead]:
+            assert "Disk full" in query
+            assert host_ip == "1.1.1.1"
+            assert limit == 2
+            return [_case(verify=False)]
+
+    cases = await query_negative_cases(FakeFeedbackRepo(), _alert(), limit=2)  # type: ignore[arg-type]
 
     assert len(cases) == 1
 

@@ -52,6 +52,7 @@ class ApprovalDecision:
     """审批决策信号载荷"""
 
     approved: bool
+    reason: str = ""
 
 
 @workflow.defn
@@ -66,6 +67,7 @@ class AlertWorkflow:
     def __init__(self) -> None:
         self._approval_received = False
         self._approved = False
+        self._approval_reason = ""
 
     @workflow.run
     async def run(self, alert_json: str) -> str:
@@ -100,6 +102,7 @@ class AlertWorkflow:
                 start_to_close_timeout=timedelta(seconds=10),
                 retry_policy=_NOTIFY_RETRY,
             )
+            await self._post_incident_summary(event_id, "unsupported", None, None, alert, plan_dict)
             return "unsupported"
 
         # 4. Policy 评估（Phase 3）
@@ -129,6 +132,7 @@ class AlertWorkflow:
                 start_to_close_timeout=timedelta(seconds=10),
                 retry_policy=_NOTIFY_RETRY,
             )
+            await self._post_incident_summary(event_id, "denied", runbook_id, None, alert, plan_dict)
             return "denied"
 
         # 6. 推送飞书卡片
@@ -169,6 +173,7 @@ class AlertWorkflow:
                     start_to_close_timeout=timedelta(seconds=10),
                     retry_policy=_NOTIFY_RETRY,
                 )
+                await self._post_incident_summary(event_id, "timeout", runbook_id, None, alert, plan_dict)
                 return "timeout"
 
             if not self._approved:
@@ -178,12 +183,20 @@ class AlertWorkflow:
                     start_to_close_timeout=timedelta(seconds=10),
                     retry_policy=_NOTIFY_RETRY,
                 )
+                if self._approval_reason:
+                    await workflow.execute_activity(
+                        "label_feedback",
+                        args=[event_id, "rejected_wrongly", self._approval_reason],
+                        start_to_close_timeout=timedelta(seconds=10),
+                        retry_policy=_NOTIFY_RETRY,
+                    )
                 await workflow.execute_activity(
                     "send_feishu_result",
                     args=[f"❌ 告警 {event_id} 已被拒绝"],
                     start_to_close_timeout=timedelta(seconds=10),
                     retry_policy=_NOTIFY_RETRY,
                 )
+                await self._post_incident_summary(event_id, "rejected", runbook_id, None, alert, plan_dict)
                 return "rejected"
 
         # 8. 执行 Runbook：同 host 同时只允许一个修复动作，避免并发误操作
@@ -207,6 +220,7 @@ class AlertWorkflow:
                 start_to_close_timeout=timedelta(seconds=10),
                 retry_policy=_NOTIFY_RETRY,
             )
+            await self._post_incident_summary(event_id, "skipped_mutex", runbook_id, None, alert, plan_dict)
             return "skipped_mutex"
 
         try:
@@ -252,6 +266,15 @@ class AlertWorkflow:
             retry_policy=_NOTIFY_RETRY,
         )
 
+        await self._post_incident_summary(
+            event_id=event_id,
+            decision_label=decision_label,
+            runbook_id=runbook_id,
+            verify=exec_result.get("verify"),
+            alert=alert,
+            plan_dict=plan_dict,
+        )
+
         return decision_label
 
     # ---------- helpers ----------
@@ -267,15 +290,48 @@ class AlertWorkflow:
         except Exception:
             workflow.logger.warning("decr_pending_gauge failed")
 
+    async def _post_incident_summary(
+        self,
+        event_id: str,
+        decision_label: str,
+        runbook_id: str | None,
+        verify: Any,
+        alert: dict[str, Any],
+        plan_dict: dict[str, Any] | None,
+    ) -> None:
+        """发送故障简报，失败不影响 workflow 结果。"""
+        agent_reasoning = str(plan_dict.get("reasoning", "")) if plan_dict else ""
+        verify_str = "true" if verify is True else ("false" if verify is False else "null")
+        try:
+            await workflow.execute_activity(
+                "post_incident_summary",
+                args=[
+                    event_id,
+                    decision_label,
+                    runbook_id,
+                    verify_str,
+                    str(alert["host_ip"]),
+                    str(alert["event_name"]),
+                    agent_reasoning,
+                ],
+                start_to_close_timeout=timedelta(seconds=15),
+                retry_policy=RetryPolicy(maximum_attempts=1),
+            )
+        except Exception:
+            workflow.logger.warning("post_incident_summary failed")
+
     async def _safe_agent_call(self, alert_json: str) -> str:
         """调用 agent_diagnose，失败时返回标记 agent_failed=True 的占位 JSON"""
         try:
-            return cast(str, await workflow.execute_activity(
-                "agent_diagnose",
-                args=[alert_json],
-                start_to_close_timeout=timedelta(minutes=5),  # agent 多轮 + 远端 ansible 调用，给足时间
-                retry_policy=RetryPolicy(maximum_attempts=2),
-            ))
+            return cast(
+                str,
+                await workflow.execute_activity(
+                    "agent_diagnose",
+                    args=[alert_json],
+                    start_to_close_timeout=timedelta(minutes=5),  # agent 多轮 + 远端 ansible 调用，给足时间
+                    retry_policy=RetryPolicy(maximum_attempts=2),
+                ),
+            )
         except Exception:
             workflow.logger.warning("agent_diagnose failed, falling back to keyword-match runbook selection")
             return json.dumps({"plan": None, "trace": [], "agent_failed": True})
@@ -320,8 +376,18 @@ class AlertWorkflow:
         fallback_params: dict[str, Any] = {"target_host": alert["host_ip"]}
         if fallback_runbook_id == "service_restart":
             name_lower = alert.get("event_name", "").lower()
-            for svc in ("nginx", "redis-server", "redis", "mysql", "postgresql",
-                        "postgres", "apache2", "docker", "ssh", "sshd"):
+            for svc in (
+                "nginx",
+                "redis-server",
+                "redis",
+                "mysql",
+                "postgresql",
+                "postgres",
+                "apache2",
+                "docker",
+                "ssh",
+                "sshd",
+            ):
                 if svc in name_lower:
                     fallback_params["service_name"] = svc
                     break
@@ -335,3 +401,4 @@ class AlertWorkflow:
             return
         self._approval_received = True
         self._approved = decision.approved
+        self._approval_reason = decision.reason

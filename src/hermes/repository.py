@@ -87,6 +87,7 @@ class AuditRepository:
                        hostname, host_ip, severity, event_name, message,
                        verify, execute_success, exec_stdout,
                        agent_reasoning, agent_confidence, created_at, completed_at,
+                       feedback_label, feedback_reason, feedback_at,
                        ts_rank(fts, websearch_to_tsquery('simple', $1)) AS rank
                 FROM {self._table}
                 WHERE fts @@ websearch_to_tsquery('simple', $1)
@@ -138,6 +139,9 @@ def _row_to_read(row: asyncpg.Record) -> AuditRecordRead:
         agent_confidence=row["agent_confidence"],
         created_at=row["created_at"],
         completed_at=row["completed_at"],
+        feedback_label=_row_value(row, "feedback_label"),
+        feedback_reason=_row_value(row, "feedback_reason"),
+        feedback_at=_row_value(row, "feedback_at"),
     )
 
 
@@ -145,3 +149,8 @@ def _validate_identifier(value: str) -> None:
     """校验 schema 名是否合法。"""
     if not _IDENTIFIER.fullmatch(value):
         raise ValueError(f"非法 schema 名：{value}")
+
+
+def _row_value(row: asyncpg.Record, key: str) -> Any:
+    """兼容老查询未选择 Phase 8 字段的情况。"""
+    return dict(row).get(key)

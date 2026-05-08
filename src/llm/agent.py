@@ -60,7 +60,11 @@ PAST_CASES_SECTION_TEMPLATE = """
 下面是过去对类似告警的处置历史。仅供参考，本次告警的实际处置方案必须以你
 通过诊断工具收集到的事实为准。注意带 ❌ 的失败案例，避免重复同样的错误。
 
+### 历史案例
 {past_cases_text}
+
+### 反例反馈
+{negative_cases_text}
 """
 
 
@@ -120,11 +124,13 @@ class DiagnosticAgent:
         max_turns: int = 5,
         timeout_per_call: float = 60,
         past_cases_text: str = "",
+        negative_cases_text: str = "",
     ) -> None:
         self.llm = llm_client
         self.max_turns = max_turns
         self.timeout_per_call = timeout_per_call
         self.past_cases_text = past_cases_text
+        self.negative_cases_text = negative_cases_text
 
     async def diagnose(self, alert: Alert) -> AgentResult:
         messages: list[dict[str, Any]] = [
@@ -145,9 +151,7 @@ class DiagnosticAgent:
                 # LLM 没调任何工具，只回了文本——这是没用的，直接报错
                 content = response.get("content") or ""
                 logger.warning(f"Agent turn {turn}: LLM returned text without tool call: {content[:200]}")
-                raise AgentLimitExceeded(
-                    f"agent did not call any tool at turn {turn}; content={content[:200]!r}"
-                )
+                raise AgentLimitExceeded(f"agent did not call any tool at turn {turn}; content={content[:200]!r}")
 
             # 把 assistant 这轮回复加进对话历史（必须，否则 tool 消息没法接 tool_call_id）
             # reasoning_content 是推理模型的 vendor 扩展，必须原样 roundtrip 否则 API 会 400
@@ -191,9 +195,12 @@ class DiagnosticAgent:
 
     def _system_prompt(self) -> str:
         """返回带 Hermes 历史案例的 system prompt。"""
-        if not self.past_cases_text.strip():
+        if not self.past_cases_text.strip() and not self.negative_cases_text.strip():
             return SYSTEM_PROMPT
-        past_section = PAST_CASES_SECTION_TEMPLATE.format(past_cases_text=self.past_cases_text)
+        past_section = PAST_CASES_SECTION_TEMPLATE.format(
+            past_cases_text=self.past_cases_text or "未找到历史相似案例。",
+            negative_cases_text=self.negative_cases_text or "未找到人工标注反例。",
+        )
         return f"{SYSTEM_PROMPT.rstrip()}\n{past_section}"
 
 

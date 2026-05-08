@@ -46,13 +46,16 @@ async def test_agent_terminates_on_propose_action():
     client.chat_with_tools.return_value = {
         "content": None,
         "tool_calls": [
-            _tool_call("propose_action", {
-                "runbook_id": "disk_cleanup",
-                "params": {"target_host": "192.168.198.130", "path": "/tmp", "min_age_days": 7},
-                "reasoning": "test",
-                "confidence": 0.9,
-                "risk_level": "low",
-            }),
+            _tool_call(
+                "propose_action",
+                {
+                    "runbook_id": "disk_cleanup",
+                    "params": {"target_host": "192.168.198.130", "path": "/tmp", "min_age_days": 7},
+                    "reasoning": "test",
+                    "confidence": 0.9,
+                    "risk_level": "low",
+                },
+            ),
         ],
     }
     agent = DiagnosticAgent(client, max_turns=5)
@@ -74,13 +77,22 @@ async def test_agent_calls_tool_then_proposes():
     client = AsyncMock()
     client.chat_with_tools.side_effect = [
         {"content": None, "tool_calls": [_tool_call("get_disk_usage", {"host": "192.168.198.130"}, "c1")]},
-        {"content": None, "tool_calls": [_tool_call("propose_action", {
-            "runbook_id": "disk_cleanup",
-            "params": {"target_host": "192.168.198.130", "path": "/tmp", "min_age_days": 7},
-            "reasoning": "/tmp 91%",
-            "confidence": 0.9,
-            "risk_level": "low",
-        }, "c2")]},
+        {
+            "content": None,
+            "tool_calls": [
+                _tool_call(
+                    "propose_action",
+                    {
+                        "runbook_id": "disk_cleanup",
+                        "params": {"target_host": "192.168.198.130", "path": "/tmp", "min_age_days": 7},
+                        "reasoning": "/tmp 91%",
+                        "confidence": 0.9,
+                        "risk_level": "low",
+                    },
+                    "c2",
+                )
+            ],
+        },
     ]
 
     async def fake_get_disk_usage(host):
@@ -93,6 +105,7 @@ async def test_agent_calls_tool_then_proposes():
         result = await agent.diagnose(_alert())
     finally:
         from src.llm.diagnostic_tools import get_disk_usage
+
         diagnostic_tools.TOOL_HANDLERS["get_disk_usage"] = get_disk_usage
 
     plan = result.plan
@@ -145,13 +158,18 @@ async def test_agent_handles_none_runbook():
     client = AsyncMock()
     client.chat_with_tools.return_value = {
         "content": None,
-        "tool_calls": [_tool_call("propose_action", {
-            "runbook_id": "none",
-            "params": {},
-            "reasoning": "需要人工介入",
-            "confidence": 0.7,
-            "risk_level": "high",
-        })],
+        "tool_calls": [
+            _tool_call(
+                "propose_action",
+                {
+                    "runbook_id": "none",
+                    "params": {},
+                    "reasoning": "需要人工介入",
+                    "confidence": 0.7,
+                    "risk_level": "high",
+                },
+            )
+        ],
     }
     agent = DiagnosticAgent(client, max_turns=5)
     result = await agent.diagnose(_alert())
@@ -165,13 +183,16 @@ async def test_agent_includes_past_cases_in_system_prompt():
     client.chat_with_tools.return_value = {
         "content": None,
         "tool_calls": [
-            _tool_call("propose_action", {
-                "runbook_id": "disk_cleanup",
-                "params": {},
-                "reasoning": "参考历史但仍需工具事实",
-                "confidence": 0.9,
-                "risk_level": "low",
-            }),
+            _tool_call(
+                "propose_action",
+                {
+                    "runbook_id": "disk_cleanup",
+                    "params": {},
+                    "reasoning": "参考历史但仍需工具事实",
+                    "confidence": 0.9,
+                    "risk_level": "low",
+                },
+            ),
         ],
     }
     past_cases_text = "1. [2026-05-01] `Disk usage > 90%` on 1.1.1.1\n   - Runbook: disk_cleanup\n"
@@ -184,3 +205,31 @@ async def test_agent_includes_past_cases_in_system_prompt():
     assert system_message["role"] == "system"
     assert "Past Experiences" in system_message["content"]
     assert "Disk usage > 90%" in system_message["content"]
+
+
+@pytest.mark.asyncio
+async def test_agent_includes_negative_cases_in_system_prompt():
+    """Hermes 反例应注入 system prompt 的反例反馈段。"""
+    client = AsyncMock()
+    client.chat_with_tools.return_value = {
+        "content": None,
+        "tool_calls": [
+            _tool_call(
+                "propose_action",
+                {
+                    "runbook_id": "disk_cleanup",
+                    "params": {},
+                    "reasoning": "避免历史错误",
+                    "confidence": 0.9,
+                    "risk_level": "low",
+                },
+            ),
+        ],
+    }
+    agent = DiagnosticAgent(client, max_turns=2, negative_cases_text="避坑案例：不要清理 /etc")
+
+    await agent.diagnose(_alert())
+
+    system_message = client.chat_with_tools.call_args.kwargs["messages"][0]
+    assert "反例反馈" in system_message["content"]
+    assert "不要清理 /etc" in system_message["content"]

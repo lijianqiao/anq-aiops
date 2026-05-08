@@ -30,20 +30,22 @@ def _alert_json(event_name: str = "Disk usage > 90%") -> str:
 
 @activity.defn(name="agent_diagnose")
 async def mock_agent_diagnose(alert_json: str) -> str:
-    return json.dumps({
-        "plan": {
-            "runbook_id": "disk_cleanup",
-            "params": {"target_host": "192.168.198.130", "path": "/tmp", "min_age_days": 7},
-            "risk_level": "low",
-            "requires_approval": True,
-            "reasoning": "/tmp 占用 91%",
-            "trace": [],
-            "confidence": 0.9,
-        },
-        "trace": [
-            {"turn": 0, "tool": "get_disk_usage", "args": {}, "result_preview": "/tmp 91%"},
-        ],
-    })
+    return json.dumps(
+        {
+            "plan": {
+                "runbook_id": "disk_cleanup",
+                "params": {"target_host": "192.168.198.130", "path": "/tmp", "min_age_days": 7},
+                "risk_level": "low",
+                "requires_approval": True,
+                "reasoning": "/tmp 占用 91%",
+                "trace": [],
+                "confidence": 0.9,
+            },
+            "trace": [
+                {"turn": 0, "tool": "get_disk_usage", "args": {}, "result_preview": "/tmp 91%"},
+            ],
+        }
+    )
 
 
 @activity.defn(name="send_feishu_alert_with_agent")
@@ -57,9 +59,7 @@ async def mock_send_feishu_alert_with_agent(
 
 
 @activity.defn(name="evaluate_policy_activity")
-async def mock_evaluate_policy(
-    runbook_id: str, runbook_params_json: str, alert_json: str, plan_json: str
-) -> str:
+async def mock_evaluate_policy(runbook_id: str, runbook_params_json: str, alert_json: str, plan_json: str) -> str:
     """默认返回 APPROVAL_REQUIRED，让现有测试都走原审批路径"""
     return '{"decision":"approval_required","matched_policy":"default","reason":""}'
 
@@ -76,21 +76,28 @@ async def mock_send_feishu_result(message: str) -> None:
 
 @activity.defn(name="write_audit")
 async def mock_write_audit(
-    alert_json: str, workflow_id: str, decision: str, runbook_id: str | None,
-    runbook_params: str | None, exec_result_json: str | None, feishu_message_id: str | None,
+    alert_json: str,
+    workflow_id: str,
+    decision: str,
+    runbook_id: str | None,
+    runbook_params: str | None,
+    exec_result_json: str | None,
+    feishu_message_id: str | None,
 ) -> str:
     return "{}"
 
 
 @activity.defn(name="execute_runbook")
 async def mock_execute_runbook(runbook_id: str, params_json: str) -> str:
-    return json.dumps({
-        "dry_run": {"success": True, "stdout": "", "stderr": "", "duration_sec": 1.0},
-        "execute": {"success": True, "stdout": "", "stderr": "", "duration_sec": 1.0},
-        "verify": True,
-        "snapshot": {},
-        "rolled_back": False,
-    })
+    return json.dumps(
+        {
+            "dry_run": {"success": True, "stdout": "", "stderr": "", "duration_sec": 1.0},
+            "execute": {"success": True, "stdout": "", "stderr": "", "duration_sec": 1.0},
+            "verify": True,
+            "snapshot": {},
+            "rolled_back": False,
+        }
+    )
 
 
 @activity.defn(name="decr_pending_gauge")
@@ -108,28 +115,55 @@ async def mock_release_mutex(target: str, token: str) -> None:
     pass
 
 
+@activity.defn(name="label_feedback")
+async def mock_label_feedback(event_id: str, label: str, reason: str) -> None:
+    pass
+
+
+@activity.defn(name="post_incident_summary")
+async def mock_post_incident_summary(
+    event_id: str,
+    decision: str,
+    runbook_id: str | None,
+    verify_str: str,
+    host_ip: str,
+    event_name: str,
+    agent_reasoning: str,
+) -> None:
+    pass
+
+
 COORDINATION_ACTIVITIES: Sequence[Callable[..., Any]] = [
     mock_decr_pending_gauge,
     mock_try_acquire_mutex,
     mock_release_mutex,
+    mock_label_feedback,
+    mock_post_incident_summary,
 ]
 
 
 ALL_ACTIVITIES: Sequence[Callable[..., Any]] = [
-    mock_agent_diagnose, mock_evaluate_policy,
-    mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
-    mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+    mock_agent_diagnose,
+    mock_evaluate_policy,
+    mock_send_feishu_alert_with_agent,
+    mock_send_feishu_alert,
+    mock_send_feishu_result,
+    mock_write_audit,
+    mock_execute_runbook,
     *COORDINATION_ACTIVITIES,
 ]
 
 
 @pytest.mark.asyncio
 async def test_workflow_approved_with_agent():
-    async with await WorkflowEnvironment.start_time_skipping() as env, Worker(
-        env.client,
-        task_queue=TASK_QUEUE,
-        workflows=[AlertWorkflow],
-        activities=ALL_ACTIVITIES,
+    async with (
+        await WorkflowEnvironment.start_time_skipping() as env,
+        Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[AlertWorkflow],
+            activities=ALL_ACTIVITIES,
+        ),
     ):
         handle = await env.client.start_workflow(
             AlertWorkflow.run,
@@ -144,11 +178,14 @@ async def test_workflow_approved_with_agent():
 
 @pytest.mark.asyncio
 async def test_workflow_rejected():
-    async with await WorkflowEnvironment.start_time_skipping() as env, Worker(
-        env.client,
-        task_queue=TASK_QUEUE,
-        workflows=[AlertWorkflow],
-        activities=ALL_ACTIVITIES,
+    async with (
+        await WorkflowEnvironment.start_time_skipping() as env,
+        Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[AlertWorkflow],
+            activities=ALL_ACTIVITIES,
+        ),
     ):
         handle = await env.client.start_workflow(
             AlertWorkflow.run,
@@ -169,17 +206,23 @@ async def test_workflow_falls_back_when_agent_fails():
     async def failing_agent(alert_json: str) -> str:
         raise RuntimeError("agent crashed")
 
-    async with await WorkflowEnvironment.start_time_skipping() as env, Worker(
-        env.client,
-        task_queue=TASK_QUEUE,
-        workflows=[AlertWorkflow],
-        activities=[
-            failing_agent,
-            mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
-            mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
-            mock_evaluate_policy,
-            *COORDINATION_ACTIVITIES,
-        ],
+    async with (
+        await WorkflowEnvironment.start_time_skipping() as env,
+        Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[AlertWorkflow],
+            activities=[
+                failing_agent,
+                mock_send_feishu_alert_with_agent,
+                mock_send_feishu_alert,
+                mock_send_feishu_result,
+                mock_write_audit,
+                mock_execute_runbook,
+                mock_evaluate_policy,
+                *COORDINATION_ACTIVITIES,
+            ],
+        ),
     ):
         handle = await env.client.start_workflow(
             AlertWorkflow.run,
@@ -217,17 +260,23 @@ async def test_workflow_unsupported_when_no_runbook_match():
         status="problem",
     ).model_dump_json()
 
-    async with await WorkflowEnvironment.start_time_skipping() as env, Worker(
-        env.client,
-        task_queue=TASK_QUEUE,
-        workflows=[AlertWorkflow],
-        activities=[
-            failing_agent,
-            mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
-            mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
-            mock_evaluate_policy,
-            *COORDINATION_ACTIVITIES,
-        ],
+    async with (
+        await WorkflowEnvironment.start_time_skipping() as env,
+        Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[AlertWorkflow],
+            activities=[
+                failing_agent,
+                mock_send_feishu_alert_with_agent,
+                mock_send_feishu_alert,
+                mock_send_feishu_result,
+                mock_write_audit,
+                mock_execute_runbook,
+                mock_evaluate_policy,
+                *COORDINATION_ACTIVITIES,
+            ],
+        ),
     ):
         handle = await env.client.start_workflow(
             AlertWorkflow.run,
@@ -248,17 +297,23 @@ async def test_workflow_handles_agent_choosing_none():
     async def none_agent(alert_json: str) -> str:
         return json.dumps({"plan": None, "trace": [{"turn": 0, "tool": "list_failed_services"}]})
 
-    async with await WorkflowEnvironment.start_time_skipping() as env, Worker(
-        env.client,
-        task_queue=TASK_QUEUE,
-        workflows=[AlertWorkflow],
-        activities=[
-            none_agent,
-            mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
-            mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
-            mock_evaluate_policy,
-            *COORDINATION_ACTIVITIES,
-        ],
+    async with (
+        await WorkflowEnvironment.start_time_skipping() as env,
+        Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[AlertWorkflow],
+            activities=[
+                none_agent,
+                mock_send_feishu_alert_with_agent,
+                mock_send_feishu_alert,
+                mock_send_feishu_result,
+                mock_write_audit,
+                mock_execute_runbook,
+                mock_evaluate_policy,
+                *COORDINATION_ACTIVITIES,
+            ],
+        ),
     ):
         handle = await env.client.start_workflow(
             AlertWorkflow.run,
@@ -282,16 +337,23 @@ async def test_workflow_denied_by_policy():
     async def deny_policy(runbook_id, runbook_params_json, alert_json, plan_json):
         return '{"decision":"deny","matched_policy":"deny_critical","reason":"禁止操作"}'
 
-    async with await WorkflowEnvironment.start_time_skipping() as env, Worker(
-        env.client,
-        task_queue=TASK_QUEUE,
-        workflows=[AlertWorkflow],
-        activities=[
-            mock_agent_diagnose, deny_policy,
-            mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
-            mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
-            *COORDINATION_ACTIVITIES,
-        ],
+    async with (
+        await WorkflowEnvironment.start_time_skipping() as env,
+        Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[AlertWorkflow],
+            activities=[
+                mock_agent_diagnose,
+                deny_policy,
+                mock_send_feishu_alert_with_agent,
+                mock_send_feishu_alert,
+                mock_send_feishu_result,
+                mock_write_audit,
+                mock_execute_runbook,
+                *COORDINATION_ACTIVITIES,
+            ],
+        ),
     ):
         handle = await env.client.start_workflow(
             AlertWorkflow.run,
@@ -322,9 +384,13 @@ async def test_workflow_auto_executes_in_live_mode():
                 task_queue=TASK_QUEUE,
                 workflows=[AlertWorkflow],
                 activities=[
-                    mock_agent_diagnose, allow_policy,
-                    mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
-                    mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+                    mock_agent_diagnose,
+                    allow_policy,
+                    mock_send_feishu_alert_with_agent,
+                    mock_send_feishu_alert,
+                    mock_send_feishu_result,
+                    mock_write_audit,
+                    mock_execute_runbook,
                     *COORDINATION_ACTIVITIES,
                 ],
             ):
@@ -359,9 +425,13 @@ async def test_workflow_shadow_mode_does_not_auto_execute():
                 task_queue=TASK_QUEUE,
                 workflows=[AlertWorkflow],
                 activities=[
-                    mock_agent_diagnose, allow_policy,
-                    mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
-                    mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+                    mock_agent_diagnose,
+                    allow_policy,
+                    mock_send_feishu_alert_with_agent,
+                    mock_send_feishu_alert,
+                    mock_send_feishu_result,
+                    mock_write_audit,
+                    mock_execute_runbook,
                     *COORDINATION_ACTIVITIES,
                 ],
             ):
@@ -391,16 +461,27 @@ async def test_workflow_skips_when_mutex_held():
     async def execute_should_not_run(runbook_id: str, params_json: str) -> str:
         raise AssertionError("mutex 持有时不应执行 runbook")
 
-    async with await WorkflowEnvironment.start_time_skipping() as env, Worker(
-        env.client,
-        task_queue=TASK_QUEUE,
-        workflows=[AlertWorkflow],
-        activities=[
-            mock_agent_diagnose, mock_evaluate_policy,
-            mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
-            mock_send_feishu_result, mock_write_audit, execute_should_not_run,
-            mock_decr_pending_gauge, held_mutex, mock_release_mutex,
-        ],
+    async with (
+        await WorkflowEnvironment.start_time_skipping() as env,
+        Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[AlertWorkflow],
+            activities=[
+                mock_agent_diagnose,
+                mock_evaluate_policy,
+                mock_send_feishu_alert_with_agent,
+                mock_send_feishu_alert,
+                mock_send_feishu_result,
+                mock_write_audit,
+                execute_should_not_run,
+                mock_decr_pending_gauge,
+                held_mutex,
+                mock_release_mutex,
+                mock_label_feedback,
+                mock_post_incident_summary,
+            ],
+        ),
     ):
         handle = await env.client.start_workflow(
             AlertWorkflow.run,
@@ -412,3 +493,61 @@ async def test_workflow_skips_when_mutex_held():
         result = await handle.result()
 
     assert result == "skipped_mutex"
+
+
+@pytest.mark.asyncio
+async def test_workflow_labels_feedback_when_rejected_with_reason():
+    """带原因拒绝审批时，应调用 label_feedback activity。"""
+    feedback_calls: list[tuple[str, str, str]] = []
+    summary_calls: list[str] = []
+
+    @activity.defn(name="label_feedback")
+    async def capture_label_feedback(event_id: str, label: str, reason: str) -> None:
+        feedback_calls.append((event_id, label, reason))
+
+    @activity.defn(name="post_incident_summary")
+    async def capture_incident_summary(
+        event_id: str,
+        decision: str,
+        runbook_id: str | None,
+        verify_str: str,
+        host_ip: str,
+        event_name: str,
+        agent_reasoning: str,
+    ) -> None:
+        summary_calls.append(decision)
+
+    async with (
+        await WorkflowEnvironment.start_time_skipping() as env,
+        Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[AlertWorkflow],
+            activities=[
+                mock_agent_diagnose,
+                mock_evaluate_policy,
+                mock_send_feishu_alert_with_agent,
+                mock_send_feishu_alert,
+                mock_send_feishu_result,
+                mock_write_audit,
+                mock_execute_runbook,
+                mock_decr_pending_gauge,
+                mock_try_acquire_mutex,
+                mock_release_mutex,
+                capture_label_feedback,
+                capture_incident_summary,
+            ],
+        ),
+    ):
+        handle = await env.client.start_workflow(
+            AlertWorkflow.run,
+            _alert_json(),
+            id="test-rejected-with-reason",
+            task_queue=TASK_QUEUE,
+        )
+        await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=False, reason="path 应该是 /tmp"))
+        result = await handle.result()
+
+    assert result == "rejected"
+    assert feedback_calls == [("12345", "rejected_wrongly", "path 应该是 /tmp")]
+    assert summary_calls == ["rejected"]

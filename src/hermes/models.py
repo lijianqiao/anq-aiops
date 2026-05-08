@@ -38,3 +38,6 @@ class AuditRecordRead(AuditRecordWrite):
     id: int
     created_at: datetime
     completed_at: datetime | None = None
+    feedback_label: str | None = None
+    feedback_reason: str | None = None
+    feedback_at: datetime | None = None

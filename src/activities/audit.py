@@ -14,18 +14,26 @@ from pathlib import Path
 from temporalio import activity
 
 from src.config import settings
+from src.hermes.feedback import FeedbackLabel, FeedbackRepository
 from src.hermes.models import AuditRecordWrite
 from src.hermes.repository import AuditRepository
 from src.models import Alert, AuditRecord, ExecutionResult
 
 logger = logging.getLogger(__name__)
 _repo: AuditRepository | None = None
+_feedback_repo: FeedbackRepository | None = None
 
 
 def set_repo(repo: AuditRepository | None) -> None:
     """设置 Hermes 审计仓储；None 表示只写 JSONL。"""
     global _repo
     _repo = repo
+
+
+def set_feedback_repo(repo: FeedbackRepository | None) -> None:
+    """设置 Hermes feedback 仓储；None 表示跳过反馈标注。"""
+    global _feedback_repo
+    _feedback_repo = repo
 
 
 @activity.defn
@@ -88,3 +96,14 @@ def _to_hermes_record(record: AuditRecord) -> AuditRecordWrite:
         execute_success=execution_result.execute.success if execution_result else None,
         exec_stdout=execution_result.execute.stdout if execution_result else None,
     )
+
+
+@activity.defn
+async def label_feedback(event_id: str, label: str, reason: str) -> None:
+    """按 event_id 给最近一条审计记录打反馈标签。"""
+    if _feedback_repo is None:
+        return
+    try:
+        await _feedback_repo.label_latest_by_event_id(event_id, FeedbackLabel(label), reason)
+    except Exception as exc:
+        logger.warning(f"Hermes 反馈标注失败：{exc}")

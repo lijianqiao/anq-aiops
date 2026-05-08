@@ -124,3 +124,30 @@ async def test_agent_diagnose_injects_hermes_cases(monkeypatch: pytest.MonkeyPat
 
     fake_router.diagnose_with_agent.assert_awaited_once()
     assert fake_router.diagnose_with_agent.call_args.kwargs["past_cases_text"] == "历史案例：Disk usage > 90%"
+
+
+@pytest.mark.asyncio
+async def test_agent_diagnose_injects_negative_cases(monkeypatch: pytest.MonkeyPatch) -> None:
+    """agent_diagnose 应查询 Hermes feedback 并传入反例文本。"""
+    from src.activities import llm as llm_activity
+
+    fake_router = MagicMock()
+    fake_router.diagnose_with_agent = AsyncMock(return_value=AgentResult(plan=None, trace=[]))
+
+    async def fake_query_negative(repo, alert, limit):
+        assert limit == 2
+        return ["negative-1"]
+
+    def fake_format_negative(cases):
+        assert cases == ["negative-1"]
+        return "避坑案例：path 错"
+
+    monkeypatch.setattr(llm_activity, "llm_router", fake_router)
+    monkeypatch.setattr(llm_activity, "hermes_repo", None)
+    monkeypatch.setattr(llm_activity, "hermes_feedback", object())
+    monkeypatch.setattr("src.activities.llm.hermes_knowledge.query_negative_cases", fake_query_negative)
+    monkeypatch.setattr("src.activities.llm.hermes_knowledge.format_negative_cases", fake_format_negative)
+
+    await llm_activity.agent_diagnose(_alert_json())
+
+    assert fake_router.diagnose_with_agent.call_args.kwargs["negative_cases_text"] == "避坑案例：path 错"

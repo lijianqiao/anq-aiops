@@ -22,18 +22,21 @@ from src.api.webhook import router as webhook_router
 from src.config import settings
 
 with workflow.unsafe.imports_passed_through():
-    from src.activities.audit import write_audit
+    from src.activities.audit import label_feedback, write_audit
     from src.activities.coordination import decr_pending_gauge, release_mutex, try_acquire_mutex
     from src.activities.feishu import send_feishu_alert, send_feishu_alert_with_agent, send_feishu_result
+    from src.activities.incident_summary import post_incident_summary
     from src.activities.llm import agent_diagnose
     from src.activities.policy import evaluate_policy_activity
     from src.activities.runbook import execute_runbook
+    from src.activities.sop_generator import generate_sop_candidates
     from src.llm import create_llm_router
     from src.workflows.alert_workflow import AlertWorkflow
 
 import src.activities.audit as audit_activities
 import src.activities.coordination as coordination_activities
 import src.activities.llm as llm_activities
+import src.activities.sop_generator as sop_generator_activities
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     hermes_db = None
     if settings.hermes_db_url:
         from src.hermes.db import HermesDB
+        from src.hermes.feedback import FeedbackRepository
         from src.hermes.repository import AuditRepository
 
         hermes_db = HermesDB(dsn=settings.hermes_db_url)
@@ -65,14 +69,21 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             await hermes_db.init_schema()
             assert hermes_db.pool is not None
             hermes_repo = AuditRepository(hermes_db.pool)
+            feedback_repo = FeedbackRepository(hermes_db.pool)
             audit_activities.set_repo(hermes_repo)
+            audit_activities.set_feedback_repo(feedback_repo)
             llm_activities.hermes_repo = hermes_repo
+            llm_activities.hermes_feedback = feedback_repo
+            sop_generator_activities.set_repo(hermes_repo)
             logger.info("Hermes 知识层已就绪")
         except Exception as exc:
             await hermes_db.close()
             hermes_db = None
             audit_activities.set_repo(None)
+            audit_activities.set_feedback_repo(None)
             llm_activities.hermes_repo = None
+            llm_activities.hermes_feedback = None
+            sop_generator_activities.set_repo(None)
             logger.warning(f"Hermes 初始化失败，将以无知识层模式运行：{exc}")
 
     worker = Worker(
@@ -80,14 +91,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         task_queue=settings.temporal_task_queue,
         workflows=[AlertWorkflow],
         activities=[
-            send_feishu_alert, send_feishu_alert_with_agent, send_feishu_result,
-            execute_runbook, write_audit,
+            send_feishu_alert,
+            send_feishu_alert_with_agent,
+            send_feishu_result,
+            execute_runbook,
+            write_audit,
+            label_feedback,
             agent_diagnose,
             evaluate_policy_activity,
-            decr_pending_gauge, try_acquire_mutex, release_mutex,
+            decr_pending_gauge,
+            try_acquire_mutex,
+            release_mutex,
+            post_incident_summary,
+            generate_sop_candidates,
         ],
     )
     worker_task = asyncio.create_task(worker.run())
+
+    from src.scheduler.jobs import start_scheduler, stop_scheduler
+
+    scheduler = await start_scheduler()
 
     from src.bus.consumer import start_consumer_loop
 
@@ -105,6 +128,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     worker_task.cancel()
     consumer_task.cancel()
     await asyncio.gather(worker_task, consumer_task, return_exceptions=True)
+    await stop_scheduler(scheduler)
     if hermes_db is not None:
         await hermes_db.close()
     await redis_client.aclose()

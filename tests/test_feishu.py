@@ -1,3 +1,11 @@
+"""
+@Author: li
+@Email: lijianqiao2906@live.com
+@FileName: test_feishu.py
+@DateTime: 2026-05-08 23:48:00
+@Docs: 测试飞书告警卡片内容、Policy 标签和拒绝原因表单
+"""
+
 from datetime import datetime
 from typing import Any
 
@@ -32,7 +40,12 @@ def _basic_plan() -> dict[str, Any]:
 def _basic_trace() -> list[dict[str, Any]]:
     return [
         {"turn": 0, "tool": "get_disk_usage", "args": {"host": "192.168.198.130"}, "result_preview": "/tmp 91%"},
-        {"turn": 1, "tool": "get_directory_sizes", "args": {"paths": ["/tmp", "/var/log"]}, "result_preview": "5.5G /tmp"},
+        {
+            "turn": 1,
+            "tool": "get_directory_sizes",
+            "args": {"paths": ["/tmp", "/var/log"]},
+            "result_preview": "5.5G /tmp",
+        },
     ]
 
 
@@ -48,6 +61,8 @@ def test_build_feishu_card_simple():
     s = str(card)
     assert "aiops-target" in s
     assert "192.168.198.130" in s
+    assert "拒绝原因" in s
+    assert "reject_with_reason" in s
 
 
 def test_build_feishu_card_with_agent_low_risk():
@@ -104,6 +119,14 @@ def test_card_shows_shadow_label_for_allow_shadow(monkeypatch):
     assert "🌓" in s or "Shadow" in s
     # shadow 模式仍要审批
     assert "按建议执行" in s
+
+
+def test_card_reject_action_requires_reason():
+    """审批卡片拒绝操作应携带原因输入表单。"""
+    card = build_feishu_card_with_agent(_make_alert(), "wf-1", _basic_plan(), [], _approval_policy())
+    text = str(card)
+    assert "拒绝原因" in text
+    assert "reject_with_reason" in text
 
 
 def test_card_shows_approval_required_label():

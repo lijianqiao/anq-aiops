@@ -38,11 +38,11 @@ def start_in_thread(temporal_client: TemporalClient) -> threading.Thread:
             P2CardActionTriggerResponse,
         )
 
-        async def _signal_workflow(workflow_id: str, approved: bool) -> None:
+        async def _signal_workflow(workflow_id: str, approved: bool, reason: str = "") -> None:
             from src.workflows.alert_workflow import AlertWorkflow, ApprovalDecision
 
             handle = temporal_client.get_workflow_handle(workflow_id)
-            await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=approved))
+            await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=approved, reason=reason))
 
         def _on_card_action(data: P2CardActionTrigger) -> P2CardActionTriggerResponse:
             try:
@@ -51,12 +51,19 @@ def start_in_thread(temporal_client: TemporalClient) -> threading.Thread:
                 workflow_id = value.get("workflow_id")
                 decision = value.get("action")
 
-                if decision not in {"approve", "reject"} or not workflow_id:
+                if decision not in {"approve", "reject", "reject_with_reason"} or not workflow_id:
                     return P2CardActionTriggerResponse({"toast": {"type": "error", "content": "回调参数不完整"}})
+
+                reason = ""
+                if decision == "reject_with_reason":
+                    form_value = getattr(event.action, "form_value", {}) if event and event.action else {}
+                    reason = str((form_value or {}).get("reason", "")).strip()
+                    if not reason:
+                        return P2CardActionTriggerResponse({"toast": {"type": "error", "content": "请填写拒绝原因"}})
 
                 # 跨线程调度到主 loop 执行 Temporal signal
                 future = asyncio.run_coroutine_threadsafe(
-                    _signal_workflow(workflow_id, decision == "approve"),
+                    _signal_workflow(workflow_id, decision == "approve", reason),
                     main_loop,
                 )
                 future.result(timeout=10)
@@ -67,7 +74,8 @@ def start_in_thread(temporal_client: TemporalClient) -> threading.Thread:
                     f"Approval signal sent: workflow={workflow_id}, "
                     f"approved={decision == 'approve'}, operator={operator_id}"
                 )
-                return P2CardActionTriggerResponse({"toast": {"type": "success", "content": "已收到，处理中"}})
+                toast = "拒绝原因已记录，处理中" if decision == "reject_with_reason" else "已收到，处理中"
+                return P2CardActionTriggerResponse({"toast": {"type": "success", "content": toast}})
             except Exception as e:
                 logger.exception(f"Feishu 卡片回调处理失败: {e}")
                 return P2CardActionTriggerResponse({"toast": {"type": "error", "content": f"处理失败: {e}"}})

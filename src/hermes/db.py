@@ -14,6 +14,7 @@ import asyncpg
 
 logger = logging.getLogger(__name__)
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+_SCHEMA_PHASE8_PATH = Path(__file__).parent / "schema_phase8.sql"
 _IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
@@ -47,13 +48,17 @@ class HermesDB:
             raise RuntimeError("Hermes 数据库未连接")
         _validate_identifier(schema_name)
 
-        sql = _SCHEMA_PATH.read_text(encoding="utf-8")
+        sqls = [
+            _SCHEMA_PATH.read_text(encoding="utf-8"),
+            _SCHEMA_PHASE8_PATH.read_text(encoding="utf-8"),
+        ]
         async with self.pool.acquire() as conn, conn.transaction():
             if schema_name != "public":
                 await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema_name}"')
                 await conn.execute(f'SET LOCAL search_path TO "{schema_name}", public')
-            await conn.execute(sql)
-        logger.info(f"Hermes schema 已初始化：{schema_name}")
+            for sql in sqls:
+                await conn.execute(sql)
+        logger.info(f"Hermes schema 已初始化（Phase 7+8）：{schema_name}")
 
 
 def _validate_identifier(value: str) -> None:

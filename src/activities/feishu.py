@@ -69,6 +69,23 @@ def _action_button(text: str, btn_type: str, workflow_id: str, action: str, aler
     }
 
 
+def _reject_with_reason_action(workflow_id: str, alert_id: str, button_text: str = "提交拒绝") -> FeishuCard:
+    """拒绝时要求填写原因，原因会写入 Hermes 反馈库。"""
+    return {
+        "tag": "form",
+        "name": f"reject_form_{alert_id}",
+        "elements": [
+            {
+                "tag": "input",
+                "name": "reason",
+                "placeholder": {"tag": "plain_text", "content": "拒绝原因（必填，写入 Hermes 反馈库）"},
+                "max_length": 200,
+            },
+            _action_button(button_text, "danger", workflow_id, "reject_with_reason", alert_id),
+        ],
+    }
+
+
 def _alert_header_elements(alert: Alert) -> list[FeishuCard]:
     """卡片顶部告警事实区"""
     return [
@@ -92,13 +109,15 @@ def build_feishu_card(alert: Alert, workflow_id: str) -> FeishuCard:
     elements = _alert_header_elements(alert)
     elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**时间：**{alert.timestamp}"}})
     elements.append({"tag": "hr"})
-    elements.append({
-        "tag": "action",
-        "actions": [
-            _action_button("批准执行", "primary", workflow_id, "approve", alert.event_id),
-            _action_button("拒绝", "danger", workflow_id, "reject", alert.event_id),
-        ],
-    })
+    elements.append(
+        {
+            "tag": "action",
+            "actions": [
+                _action_button("批准执行", "primary", workflow_id, "approve", alert.event_id),
+                _reject_with_reason_action(workflow_id, alert.event_id),
+            ],
+        }
+    )
     return {
         "header": {
             "title": {"tag": "plain_text", "content": f"{emoji} AIOps 告警通知"},
@@ -197,12 +216,12 @@ def build_feishu_card_with_agent(
     if decision != "deny" and not (decision == "allow" and settings.aiops_mode == "live"):
         actions = [
             _action_button("按建议执行", "primary", workflow_id, "approve", alert.event_id),
-            _action_button("拒绝", "danger", workflow_id, "reject", alert.event_id),
+            _reject_with_reason_action(workflow_id, alert.event_id),
         ]
         if risk_level == "high":
             actions.insert(
                 1,
-                _action_button("⚠️ 高风险 - 人工处理", "default", workflow_id, "reject", alert.event_id),
+                _reject_with_reason_action(workflow_id, alert.event_id, "⚠️ 高风险 - 人工处理"),
             )
 
     elements: list[FeishuCard] = [
@@ -250,9 +269,7 @@ async def _post_im_message(*, msg_type: str, content: dict[str, Any]) -> str:
     try:
         data = resp.json()
     except ValueError as exc:
-        raise RuntimeError(
-            f"Feishu non-JSON response (HTTP {resp.status_code}): {resp.text[:500]}"
-        ) from exc
+        raise RuntimeError(f"Feishu non-JSON response (HTTP {resp.status_code}): {resp.text[:500]}") from exc
     if data.get("code") != 0:
         raise RuntimeError(
             f"Feishu send error: HTTP {resp.status_code} code={data.get('code')} "

@@ -5,6 +5,11 @@ from datetime import timedelta
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
+# settings 实例化会读 .env（触发 pathlib.expanduser），Temporal sandbox 默认拦
+# 用 imports_passed_through 让 sandbox 跳过对它的检查
+with workflow.unsafe.imports_passed_through():
+    from src.config import settings
+
 # 白名单与 src/runbooks/__init__.py 的 RUNBOOK_REGISTRY 保持同步。
 # 不直接 import RUNBOOK_REGISTRY 是为了让 workflow 模块保持轻量、可被 sandbox 检查。
 _KNOWN_RUNBOOKS = frozenset({"disk_cleanup", "service_restart"})
@@ -82,7 +87,7 @@ class AlertWorkflow:
             )
             return "unsupported"
 
-        # 4. Policy 评估（Phase 3 新增）
+        # 4. Policy 评估（Phase 3）
         plan_json_for_policy = json.dumps(plan_dict) if plan_dict else "null"
         policy_result_json = await workflow.execute_activity(
             "evaluate_policy_activity",
@@ -90,9 +95,28 @@ class AlertWorkflow:
             start_to_close_timeout=timedelta(seconds=10),
             retry_policy=_NOTIFY_RETRY,
         )
+        policy_result = json.loads(policy_result_json)
+        policy_decision = policy_result.get("decision", "approval_required")
 
-        # 5. 推送飞书卡片（Task 9 会让卡片读 policy_result_json 来渲染标签；
-        #    Task 7 阶段 send_feishu_alert_with_agent 接受这个参数但暂不渲染）
+        # 5. DENY 分支：拒绝执行 + 通知 + 早返回
+        if policy_decision == "deny":
+            matched = policy_result.get("matched_policy", "unknown")
+            reason = policy_result.get("reason", "")
+            await workflow.execute_activity(
+                "write_audit",
+                args=[alert_json, workflow_id, "denied", runbook_id, runbook_params, None, None],
+                start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=_NOTIFY_RETRY,
+            )
+            await workflow.execute_activity(
+                "send_feishu_result",
+                args=[f"🚫 告警 {event_id} 被 Policy 拒绝执行（规则 `{matched}`）：{reason}"],
+                start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=_NOTIFY_RETRY,
+            )
+            return "denied"
+
+        # 6. 推送飞书卡片
         if plan_dict is not None:
             feishu_msg_id = await workflow.execute_activity(
                 "send_feishu_alert_with_agent",
@@ -101,7 +125,6 @@ class AlertWorkflow:
                 retry_policy=_NOTIFY_RETRY,
             )
         else:
-            # Agent 失败 / 选了 none：发普通卡片
             feishu_msg_id = await workflow.execute_activity(
                 "send_feishu_alert",
                 args=[alert_json, workflow_id],
@@ -109,43 +132,46 @@ class AlertWorkflow:
                 retry_policy=_NOTIFY_RETRY,
             )
 
-        # 6. 等审批信号（30 分钟超时）—— Task 8 会在这里加 policy 三分支
-        try:
-            await workflow.wait_condition(
-                lambda: self._approval_received,
-                timeout=timedelta(minutes=30),
-            )
-        except TimeoutError:
-            await workflow.execute_activity(
-                "write_audit",
-                args=[alert_json, workflow_id, "timeout", None, None, None, feishu_msg_id],
-                start_to_close_timeout=timedelta(seconds=10),
-                retry_policy=_NOTIFY_RETRY,
-            )
-            await workflow.execute_activity(
-                "send_feishu_result",
-                args=[f"⏰ 告警 {event_id} 审批超时（30分钟），已跳过"],
-                start_to_close_timeout=timedelta(seconds=10),
-                retry_policy=_NOTIFY_RETRY,
-            )
-            return "timeout"
+        # 7. ALLOW + live 模式：跳过审批直接执行；其他场景走原审批流
+        auto_execute = policy_decision == "allow" and settings.aiops_mode == "live"
 
-        if not self._approved:
-            await workflow.execute_activity(
-                "write_audit",
-                args=[alert_json, workflow_id, "rejected", None, None, None, feishu_msg_id],
-                start_to_close_timeout=timedelta(seconds=10),
-                retry_policy=_NOTIFY_RETRY,
-            )
-            await workflow.execute_activity(
-                "send_feishu_result",
-                args=[f"❌ 告警 {event_id} 已被拒绝"],
-                start_to_close_timeout=timedelta(seconds=10),
-                retry_policy=_NOTIFY_RETRY,
-            )
-            return "rejected"
+        if not auto_execute:
+            try:
+                await workflow.wait_condition(
+                    lambda: self._approval_received,
+                    timeout=timedelta(minutes=30),
+                )
+            except TimeoutError:
+                await workflow.execute_activity(
+                    "write_audit",
+                    args=[alert_json, workflow_id, "timeout", None, None, None, feishu_msg_id],
+                    start_to_close_timeout=timedelta(seconds=10),
+                    retry_policy=_NOTIFY_RETRY,
+                )
+                await workflow.execute_activity(
+                    "send_feishu_result",
+                    args=[f"⏰ 告警 {event_id} 审批超时（30分钟），已跳过"],
+                    start_to_close_timeout=timedelta(seconds=10),
+                    retry_policy=_NOTIFY_RETRY,
+                )
+                return "timeout"
 
-        # 7. 执行 Runbook
+            if not self._approved:
+                await workflow.execute_activity(
+                    "write_audit",
+                    args=[alert_json, workflow_id, "rejected", None, None, None, feishu_msg_id],
+                    start_to_close_timeout=timedelta(seconds=10),
+                    retry_policy=_NOTIFY_RETRY,
+                )
+                await workflow.execute_activity(
+                    "send_feishu_result",
+                    args=[f"❌ 告警 {event_id} 已被拒绝"],
+                    start_to_close_timeout=timedelta(seconds=10),
+                    retry_policy=_NOTIFY_RETRY,
+                )
+                return "rejected"
+
+        # 8. 执行 Runbook
         exec_result_json = await workflow.execute_activity(
             "execute_runbook",
             args=[runbook_id, runbook_params],
@@ -153,18 +179,20 @@ class AlertWorkflow:
             retry_policy=RetryPolicy(maximum_attempts=1),
         )
 
-        # 8. 写审计
+        # 9. 写审计：自动执行用 auto_approved 标签和人工审批的 approved 区分开
+        decision_label = "auto_approved" if auto_execute else "approved"
         await workflow.execute_activity(
             "write_audit",
-            args=[alert_json, workflow_id, "approved", runbook_id, runbook_params, exec_result_json, feishu_msg_id],
+            args=[alert_json, workflow_id, decision_label, runbook_id, runbook_params, exec_result_json, feishu_msg_id],
             start_to_close_timeout=timedelta(seconds=10),
             retry_policy=_NOTIFY_RETRY,
         )
 
-        # 9. 飞书通知结果
+        # 10. 飞书通知结果
         exec_result = json.loads(exec_result_json)
+        prefix = "🤖 自动" if auto_execute else "✅"
         if exec_result.get("verify"):
-            msg = f"✅ 告警 {event_id} 处理成功（Runbook: {runbook_id}）"
+            msg = f"{prefix} 告警 {event_id} 处理成功（Runbook: {runbook_id}）"
         elif not exec_result.get("dry_run", {}).get("success"):
             msg = f"⚠️ 告警 {event_id} Runbook 预检失败，未执行实际操作"
         elif not exec_result.get("execute", {}).get("success"):
@@ -179,7 +207,7 @@ class AlertWorkflow:
             retry_policy=_NOTIFY_RETRY,
         )
 
-        return "approved"
+        return decision_label
 
     # ---------- helpers ----------
 

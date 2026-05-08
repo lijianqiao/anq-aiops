@@ -245,3 +245,109 @@ async def test_workflow_handles_agent_choosing_none():
             await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=True))
             result = await handle.result()
             assert result == "approved"
+
+
+# ---- Phase 3 Task 8: Policy 三分支 ----
+
+
+@pytest.mark.asyncio
+async def test_workflow_denied_by_policy():
+    """policy 返回 deny → workflow 不等审批，直接 denied 返回"""
+
+    @activity.defn(name="evaluate_policy_activity")
+    async def deny_policy(runbook_id, runbook_params_json, alert_json, plan_json):
+        return '{"decision":"deny","matched_policy":"deny_critical","reason":"禁止操作"}'
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[AlertWorkflow],
+            activities=[
+                mock_agent_diagnose, deny_policy,
+                mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
+                mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+            ],
+        ):
+            handle = await env.client.start_workflow(
+                AlertWorkflow.run,
+                _alert_json(),
+                id="test-denied",
+                task_queue=TASK_QUEUE,
+            )
+            # 故意不发审批信号 —— deny 应该直接返回，不阻塞
+            result = await handle.result()
+            assert result == "denied"
+
+
+@pytest.mark.asyncio
+async def test_workflow_auto_executes_in_live_mode():
+    """policy=allow 且 aiops_mode=live → 跳过审批直接执行"""
+    from src.config import settings
+
+    @activity.defn(name="evaluate_policy_activity")
+    async def allow_policy(runbook_id, runbook_params_json, alert_json, plan_json):
+        return '{"decision":"allow","matched_policy":"low_risk","reason":"auto"}'
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        original_mode = settings.aiops_mode
+        settings.aiops_mode = "live"
+        try:
+            async with Worker(
+                env.client,
+                task_queue=TASK_QUEUE,
+                workflows=[AlertWorkflow],
+                activities=[
+                    mock_agent_diagnose, allow_policy,
+                    mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
+                    mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+                ],
+            ):
+                handle = await env.client.start_workflow(
+                    AlertWorkflow.run,
+                    _alert_json(),
+                    id="test-auto-live",
+                    task_queue=TASK_QUEUE,
+                )
+                # 故意不发审批信号 —— live + allow 应直接执行
+                result = await handle.result()
+                assert result == "auto_approved"
+        finally:
+            settings.aiops_mode = original_mode
+
+
+@pytest.mark.asyncio
+async def test_workflow_shadow_mode_does_not_auto_execute():
+    """policy=allow 但 aiops_mode=shadow → 仍走人工审批"""
+    from src.config import settings
+
+    @activity.defn(name="evaluate_policy_activity")
+    async def allow_policy(runbook_id, runbook_params_json, alert_json, plan_json):
+        return '{"decision":"allow","matched_policy":"low_risk","reason":"auto"}'
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        original_mode = settings.aiops_mode
+        settings.aiops_mode = "shadow"
+        try:
+            async with Worker(
+                env.client,
+                task_queue=TASK_QUEUE,
+                workflows=[AlertWorkflow],
+                activities=[
+                    mock_agent_diagnose, allow_policy,
+                    mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
+                    mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+                ],
+            ):
+                handle = await env.client.start_workflow(
+                    AlertWorkflow.run,
+                    _alert_json(),
+                    id="test-shadow",
+                    task_queue=TASK_QUEUE,
+                )
+                # shadow 模式下仍要等审批
+                await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=True))
+                result = await handle.result()
+                assert result == "approved"  # 经过人工审批的 approved，不是 auto_approved
+        finally:
+            settings.aiops_mode = original_mode

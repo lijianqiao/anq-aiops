@@ -117,3 +117,47 @@ def test_risk_evaluation():
     )
     assert risk.approved is True
     assert risk.auto_execute_eligible is True
+
+
+# ---- Phase 3: Policy ----
+
+
+def test_decision_enum_values():
+    from src.models import Decision
+
+    assert Decision.ALLOW.value == "allow"
+    assert Decision.APPROVAL_REQUIRED.value == "approval_required"
+    assert Decision.DENY.value == "deny"
+
+
+def test_policy_result_serialization():
+    from src.models import Decision, PolicyResult
+
+    result = PolicyResult(
+        decision=Decision.ALLOW,
+        matched_policy="low_risk_disk_cleanup",
+        reason="/tmp 清理 + 高置信度 → 自动",
+    )
+    j = result.model_dump_json()
+    restored = PolicyResult.model_validate_json(j)
+    assert restored.decision == Decision.ALLOW
+    assert restored.matched_policy == "low_risk_disk_cleanup"
+
+
+def test_policy_result_requires_all_fields():
+    """避免运维误开默认值；所有字段必须显式给"""
+    import pytest
+    from pydantic import ValidationError
+
+    from src.models import PolicyResult
+
+    with pytest.raises(ValidationError):
+        PolicyResult(matched_policy="x", reason="y")  # 缺 decision
+
+
+def test_policy_result_decision_is_typed():
+    """字符串值会被强制成 Decision 枚举"""
+    from src.models import Decision, PolicyResult
+
+    r = PolicyResult(decision="allow", matched_policy="x", reason="y")
+    assert r.decision is Decision.ALLOW

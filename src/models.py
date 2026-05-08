@@ -1,4 +1,5 @@
 from datetime import datetime
+from enum import Enum
 
 from pydantic import BaseModel
 
@@ -81,3 +82,26 @@ class RiskEvaluation(BaseModel):
     risk_score: float
     reason: str
     auto_execute_eligible: bool
+
+
+# ---- Phase 3: Policy 层 ----
+
+
+class Decision(str, Enum):
+    """Policy 评估决策
+
+    继承 str 让 Pydantic 在 JSON 序列化时输出小写字符串而非枚举字面量，
+    YAML 配置里也能直接写 "allow" / "deny" 而不用引用 Python 类。
+    """
+
+    ALLOW = "allow"  # 自动执行
+    APPROVAL_REQUIRED = "approval_required"  # 转人工审批
+    DENY = "deny"  # 拒绝执行
+
+
+class PolicyResult(BaseModel):
+    """Policy 评估结果"""
+
+    decision: Decision
+    matched_policy: str  # 命中的 rule name；默认决策时为 "default"
+    reason: str  # 命中理由（来自 rule description）

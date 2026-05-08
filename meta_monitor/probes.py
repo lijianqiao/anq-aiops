@@ -56,6 +56,20 @@ def _split_host_port(addr: str, default_port: int) -> tuple[str, int]:
     return host, int(port)
 
 
+def _env_or_default(name: str, default: str) -> str:
+    """
+    读取环境变量，空字符串按未配置处理
+
+    Args:
+        name: 环境变量名
+        default: 默认值
+
+    Returns:
+        最终配置值
+    """
+    return os.environ.get(name, "").strip() or default
+
+
 def probe_fastapi(base_url: str) -> ProbeResult:
     """
     探测 AIOps FastAPI /health 端点
@@ -149,9 +163,9 @@ def probe_llm() -> ProbeResult:
 
 
 PROBES: dict[str, ProbeFunc] = {
-    "fastapi": lambda: probe_fastapi(os.environ.get("META_AIOPS_URL", "http://aiops:8000")),
-    "temporal": lambda: probe_temporal(os.environ.get("META_TEMPORAL_ADDR", _DEFAULT_TEMPORAL_ADDR)),
-    "redis": lambda: probe_redis(os.environ.get("META_REDIS_ADDR", "redis:6379")),
+    "fastapi": lambda: probe_fastapi(_env_or_default("META_AIOPS_URL", "http://aiops:8000")),
+    "temporal": lambda: probe_temporal(_env_or_default("META_TEMPORAL_ADDR", _DEFAULT_TEMPORAL_ADDR)),
+    "redis": lambda: probe_redis(_env_or_default("META_REDIS_ADDR", "redis:6379")),
     "lark": probe_lark_ws,
     "llm": probe_llm,
 }

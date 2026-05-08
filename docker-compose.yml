@@ -68,6 +68,20 @@ services:
       # SSH key 挂进容器，让 ansible 能免密登录目标主机
       - /opt/aiops/ssh-keys:/root/.ssh:ro
 
+  meta-monitor:
+    build:
+      context: .
+      dockerfile: meta_monitor/Dockerfile
+    environment:
+      META_AIOPS_URL: http://aiops:8000
+      META_TEMPORAL_ADDR: ${META_TEMPORAL_ADDR:-}
+      META_REDIS_ADDR: redis:6379
+      META_INTERVAL_SEC: "60"
+      META_FEISHU_WEBHOOK_URL: ${META_FEISHU_WEBHOOK_URL:-}
+      LLM_PRIMARY_BASE_URL: ${LLM_PRIMARY_BASE_URL:-}
+    # 故意不加 depends_on：meta-monitor 应先于主应用发现故障，而不是等待主应用健康。
+    restart: unless-stopped
+
 volumes:
   pgdata:
   redisdata:

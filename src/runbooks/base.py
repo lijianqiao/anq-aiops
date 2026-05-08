@@ -54,10 +54,13 @@ def run_ansible(playbook: str, extravars: dict[str, Any], check: bool = False) -
         shutil.copy2(source_playbook, runner_playbook)
         shutil.copy2(source_inventory, runner_inventory)
 
+        # 用绝对路径传 inventory：ansible-runner 收到相对路径时会去
+        # private_data_dir/inventory/ 子目录里找，单文件放在根下找不到 →
+        # ansible-playbook 拿不到 -i 参数 → "Could not match host pattern"
         r = ansible_runner.run(
             private_data_dir=str(runner_path),
             playbook=runner_playbook.name,
-            inventory=runner_inventory.name,
+            inventory=str(runner_inventory),
             extravars=extravars,
             **({"cmdline": "--check"} if check else {}),
         )

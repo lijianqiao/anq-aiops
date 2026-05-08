@@ -58,7 +58,9 @@ def _handle_failure(name: str, msg: str, now: float) -> None:
     if now - last_alerted < _DEDUP_WINDOW:
         return
 
-    send_alert(f"⚠️ AIOps healthcheck FAIL [{name}]: {msg}")
+    alert_message = f"⚠️ AIOps healthcheck FAIL [{name}]: {msg}"
+    print(alert_message, file=sys.stderr)
+    send_alert(alert_message)
     _alert_state[name] = {
         "failed_at": state.get("failed_at") or now,
         "alerted_at": now,
@@ -78,7 +80,9 @@ def _handle_recovery(name: str, msg: str, now: float) -> None:
         return
 
     duration = int(now - _alert_state[name].get("failed_at", now))
-    send_alert(f"✅ AIOps healthcheck RECOVERED [{name}] after {duration}s: {msg}")
+    alert_message = f"✅ AIOps healthcheck RECOVERED [{name}] after {duration}s: {msg}"
+    print(alert_message, file=sys.stderr)
+    send_alert(alert_message)
     _alert_state.pop(name)
 
 

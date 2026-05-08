@@ -226,7 +226,10 @@ def test_healthcheck_run_once_all_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     assert sent == []
 
 
-def test_healthcheck_run_once_one_failure_sends_alert(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_healthcheck_run_once_one_failure_sends_alert(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """任一 probe 失败时发送包含失败原因的告警"""
     from meta_monitor import probes
     from meta_monitor.healthcheck import _alert_state, run_once
@@ -248,6 +251,8 @@ def test_healthcheck_run_once_one_failure_sends_alert(monkeypatch: pytest.Monkey
     assert len(sent) == 1
     assert "broken" in sent[0]
     assert "connection refused" in sent[0]
+    captured = capsys.readouterr()
+    assert "AIOps healthcheck FAIL [broken]" in captured.err
 
 
 def test_healthcheck_dedup_within_window(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -267,7 +272,10 @@ def test_healthcheck_dedup_within_window(monkeypatch: pytest.MonkeyPatch) -> Non
     assert len(sent) == 1
 
 
-def test_healthcheck_recovery_sends_recovery_alert(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_healthcheck_recovery_sends_recovery_alert(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     """组件从失败恢复到健康时发送一条恢复消息"""
     from meta_monitor import probes
     from meta_monitor.healthcheck import _alert_state, run_once
@@ -290,3 +298,5 @@ def test_healthcheck_recovery_sends_recovery_alert(monkeypatch: pytest.MonkeyPat
     run_once()
     assert len(sent) == 2
     assert "recover" in sent[1].lower() or "ok" in sent[1].lower()
+    captured = capsys.readouterr()
+    assert "AIOps healthcheck RECOVERED [broken]" in captured.err

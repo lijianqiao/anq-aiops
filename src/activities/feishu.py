@@ -69,21 +69,19 @@ def _action_button(text: str, btn_type: str, workflow_id: str, action: str, aler
     }
 
 
-def _reject_with_reason_action(workflow_id: str, alert_id: str, button_text: str = "提交拒绝") -> FeishuCard:
-    """拒绝时要求填写原因，原因会写入 Hermes 反馈库。"""
+def _reject_reason_input() -> FeishuCard:
+    """拒绝原因输入框，提交拒绝时由飞书回调带回 form_value。"""
     return {
-        "tag": "form",
-        "name": f"reject_form_{alert_id}",
-        "elements": [
-            {
-                "tag": "input",
-                "name": "reason",
-                "placeholder": {"tag": "plain_text", "content": "拒绝原因（必填，写入 Hermes 反馈库）"},
-                "max_length": 200,
-            },
-            _action_button(button_text, "danger", workflow_id, "reject_with_reason", alert_id),
-        ],
+        "tag": "input",
+        "name": "reason",
+        "placeholder": {"tag": "plain_text", "content": "拒绝原因（必填，写入 Hermes 反馈库）"},
+        "max_length": 200,
     }
+
+
+def _reject_with_reason_button(workflow_id: str, alert_id: str, button_text: str = "提交拒绝") -> FeishuCard:
+    """提交拒绝按钮；拒绝原因由同卡片 input 的 form_value 提供。"""
+    return _action_button(button_text, "danger", workflow_id, "reject_with_reason", alert_id)
 
 
 def _alert_header_elements(alert: Alert) -> list[FeishuCard]:
@@ -109,12 +107,13 @@ def build_feishu_card(alert: Alert, workflow_id: str) -> FeishuCard:
     elements = _alert_header_elements(alert)
     elements.append({"tag": "div", "text": {"tag": "lark_md", "content": f"**时间：**{alert.timestamp}"}})
     elements.append({"tag": "hr"})
+    elements.append(_reject_reason_input())
     elements.append(
         {
             "tag": "action",
             "actions": [
                 _action_button("批准执行", "primary", workflow_id, "approve", alert.event_id),
-                _reject_with_reason_action(workflow_id, alert.event_id),
+                _reject_with_reason_button(workflow_id, alert.event_id),
             ],
         }
     )
@@ -216,12 +215,12 @@ def build_feishu_card_with_agent(
     if decision != "deny" and not (decision == "allow" and settings.aiops_mode == "live"):
         actions = [
             _action_button("按建议执行", "primary", workflow_id, "approve", alert.event_id),
-            _reject_with_reason_action(workflow_id, alert.event_id),
+            _reject_with_reason_button(workflow_id, alert.event_id),
         ]
         if risk_level == "high":
             actions.insert(
                 1,
-                _reject_with_reason_action(workflow_id, alert.event_id, "⚠️ 高风险 - 人工处理"),
+                _reject_with_reason_button(workflow_id, alert.event_id, "⚠️ 高风险 - 人工处理"),
             )
 
     elements: list[FeishuCard] = [
@@ -232,7 +231,7 @@ def build_feishu_card_with_agent(
         trace_section,
     ]
     if actions:
-        elements += [{"tag": "hr"}, {"tag": "action", "actions": actions}]
+        elements += [{"tag": "hr"}, _reject_reason_input(), {"tag": "action", "actions": actions}]
 
     return {
         "header": {

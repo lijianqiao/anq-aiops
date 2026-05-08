@@ -127,6 +127,8 @@ def test_card_reject_action_requires_reason():
     text = str(card)
     assert "拒绝原因" in text
     assert "reject_with_reason" in text
+    assert _action_tags(card) <= {"button"}
+    assert any(element.get("tag") == "input" and element.get("name") == "reason" for element in card["elements"])
 
 
 def test_card_shows_approval_required_label():
@@ -149,3 +151,12 @@ def test_card_shows_deny_label_no_buttons():
     s = str(card)
     assert "🚫" in s or "拒绝执行" in s
     assert "按建议执行" not in s
+
+
+def _action_tags(card: dict[str, Any]) -> set[str]:
+    """返回所有 action block 内的 tag，防止把 form/input 放进 actions。"""
+    tags: set[str] = set()
+    for element in card["elements"]:
+        if element.get("tag") == "action":
+            tags.update(str(action.get("tag")) for action in element.get("actions", []))
+    return tags

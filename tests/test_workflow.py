@@ -44,8 +44,21 @@ async def mock_agent_diagnose(alert_json: str) -> str:
 
 
 @activity.defn(name="send_feishu_alert_with_agent")
-async def mock_send_feishu_alert_with_agent(alert_json: str, workflow_id: str, agent_output_json: str) -> str:
+async def mock_send_feishu_alert_with_agent(
+    alert_json: str,
+    workflow_id: str,
+    agent_output_json: str,
+    policy_result_json: str = "{}",
+) -> str:
     return "msg_with_agent_123"
+
+
+@activity.defn(name="evaluate_policy_activity")
+async def mock_evaluate_policy(
+    runbook_id: str, runbook_params_json: str, alert_json: str, plan_json: str
+) -> str:
+    """默认返回 APPROVAL_REQUIRED，让现有测试都走原审批路径"""
+    return '{"decision":"approval_required","matched_policy":"default","reason":""}'
 
 
 @activity.defn(name="send_feishu_alert")
@@ -78,7 +91,7 @@ async def mock_execute_runbook(runbook_id: str, params_json: str) -> str:
 
 
 ALL_ACTIVITIES = [
-    mock_agent_diagnose,
+    mock_agent_diagnose, mock_evaluate_policy,
     mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
     mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
 ]
@@ -141,6 +154,7 @@ async def test_workflow_falls_back_when_agent_fails():
                 failing_agent,
                 mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
                 mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+                mock_evaluate_policy,
             ],
         ):
             handle = await env.client.start_workflow(
@@ -156,11 +170,28 @@ async def test_workflow_falls_back_when_agent_fails():
 
 @pytest.mark.asyncio
 async def test_workflow_unsupported_when_no_runbook_match():
-    """agent 失败 + 关键词也匹配不上 → unsupported"""
+    """agent 失败 + 关键词也匹配不上 → unsupported
+
+    构造完全不含 disk/service/磁盘/进程 等关键词的告警（注意 message 也要纯净，
+    因为 _select_runbook 现在同时看 event_name + message）
+    """
 
     @activity.defn(name="agent_diagnose")
     async def failing_agent(alert_json: str) -> str:
         raise RuntimeError("agent crashed")
+
+    # 用一个完全不含磁盘/服务关键词的 alert
+    no_match_alert = Alert(
+        event_id="999",
+        event_name="CPU temperature too high",
+        severity="warning",
+        hostname="aiops-target",
+        host_ip="192.168.198.130",
+        trigger_id="t-999",
+        message="Sensor reading unusual",
+        timestamp="2026-04-30T14:30:00Z",
+        status="problem",
+    ).model_dump_json()
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
         async with Worker(
@@ -171,11 +202,12 @@ async def test_workflow_unsupported_when_no_runbook_match():
                 failing_agent,
                 mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
                 mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+                mock_evaluate_policy,
             ],
         ):
             handle = await env.client.start_workflow(
                 AlertWorkflow.run,
-                _alert_json(event_name="Some random alert nobody knows"),
+                no_match_alert,
                 id="test-unsupported",
                 task_queue=TASK_QUEUE,
             )
@@ -201,6 +233,7 @@ async def test_workflow_handles_agent_choosing_none():
                 none_agent,
                 mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
                 mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+                mock_evaluate_policy,
             ],
         ):
             handle = await env.client.start_workflow(

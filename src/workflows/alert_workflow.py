@@ -61,13 +61,42 @@ class AlertWorkflow:
 
         # 1. ReAct agent 诊断（一次 activity 内自带多轮 tool calling）
         agent_output_json = await self._safe_agent_call(alert_json)
-        plan_dict, trace = self._parse_agent_output(agent_output_json)
+        plan_dict, _trace = self._parse_agent_output(agent_output_json)
 
-        # 2. 推送飞书卡片
+        # 2. 决定 runbook + 参数（提到等审批之前，因为 policy 评估需要它们）
+        runbook_id, runbook_params = self._resolve_runbook(plan_dict, alert)
+
+        # 3. 不支持的 runbook → 早返回（连 policy 都不用评估）
+        if runbook_id is None:
+            await workflow.execute_activity(
+                "write_audit",
+                args=[alert_json, workflow_id, "unsupported", None, None, None, None],
+                start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=_NOTIFY_RETRY,
+            )
+            await workflow.execute_activity(
+                "send_feishu_result",
+                args=[f"Unsupported alert {event_id}: no matching runbook"],
+                start_to_close_timeout=timedelta(seconds=10),
+                retry_policy=_NOTIFY_RETRY,
+            )
+            return "unsupported"
+
+        # 4. Policy 评估（Phase 3 新增）
+        plan_json_for_policy = json.dumps(plan_dict) if plan_dict else "null"
+        policy_result_json = await workflow.execute_activity(
+            "evaluate_policy_activity",
+            args=[runbook_id, runbook_params, alert_json, plan_json_for_policy],
+            start_to_close_timeout=timedelta(seconds=10),
+            retry_policy=_NOTIFY_RETRY,
+        )
+
+        # 5. 推送飞书卡片（Task 9 会让卡片读 policy_result_json 来渲染标签；
+        #    Task 7 阶段 send_feishu_alert_with_agent 接受这个参数但暂不渲染）
         if plan_dict is not None:
             feishu_msg_id = await workflow.execute_activity(
                 "send_feishu_alert_with_agent",
-                args=[alert_json, workflow_id, agent_output_json],
+                args=[alert_json, workflow_id, agent_output_json, policy_result_json],
                 start_to_close_timeout=timedelta(seconds=30),
                 retry_policy=_NOTIFY_RETRY,
             )
@@ -80,7 +109,7 @@ class AlertWorkflow:
                 retry_policy=_NOTIFY_RETRY,
             )
 
-        # 3. 等审批信号（30 分钟超时）
+        # 6. 等审批信号（30 分钟超时）—— Task 8 会在这里加 policy 三分支
         try:
             await workflow.wait_condition(
                 lambda: self._approval_received,
@@ -116,25 +145,7 @@ class AlertWorkflow:
             )
             return "rejected"
 
-        # 4. 决定 runbook + 参数
-        runbook_id, runbook_params = self._resolve_runbook(plan_dict, alert)
-
-        if runbook_id is None:
-            await workflow.execute_activity(
-                "write_audit",
-                args=[alert_json, workflow_id, "unsupported", None, None, None, feishu_msg_id],
-                start_to_close_timeout=timedelta(seconds=10),
-                retry_policy=_NOTIFY_RETRY,
-            )
-            await workflow.execute_activity(
-                "send_feishu_result",
-                args=[f"Unsupported alert {event_id}: no matching runbook"],
-                start_to_close_timeout=timedelta(seconds=10),
-                retry_policy=_NOTIFY_RETRY,
-            )
-            return "unsupported"
-
-        # 5. 执行 Runbook
+        # 7. 执行 Runbook
         exec_result_json = await workflow.execute_activity(
             "execute_runbook",
             args=[runbook_id, runbook_params],
@@ -142,7 +153,7 @@ class AlertWorkflow:
             retry_policy=RetryPolicy(maximum_attempts=1),
         )
 
-        # 6. 写审计
+        # 8. 写审计
         await workflow.execute_activity(
             "write_audit",
             args=[alert_json, workflow_id, "approved", runbook_id, runbook_params, exec_result_json, feishu_msg_id],
@@ -150,7 +161,7 @@ class AlertWorkflow:
             retry_policy=_NOTIFY_RETRY,
         )
 
-        # 7. 飞书通知结果
+        # 9. 飞书通知结果
         exec_result = json.loads(exec_result_json)
         if exec_result.get("verify"):
             msg = f"✅ 告警 {event_id} 处理成功（Runbook: {runbook_id}）"

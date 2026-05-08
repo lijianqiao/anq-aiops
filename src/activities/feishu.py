@@ -225,8 +225,17 @@ async def send_feishu_alert(alert_json: str, workflow_id: str) -> str:
 
 
 @activity.defn
-async def send_feishu_alert_with_agent(alert_json: str, workflow_id: str, agent_output_json: str) -> str:
-    """推送带 ReAct agent 诊断结果的卡片"""
+async def send_feishu_alert_with_agent(
+    alert_json: str,
+    workflow_id: str,
+    agent_output_json: str,
+    policy_result_json: str = "{}",
+) -> str:
+    """推送带 ReAct agent 诊断结果的卡片
+
+    policy_result_json: 占位参数，Task 9 会真正用它在卡片上加 policy 决策标签
+    """
+    _ = policy_result_json  # Task 9 实装；现在保留参数兼容 workflow 调用
     alert = Alert.model_validate_json(alert_json)
     agent_output = json.loads(agent_output_json)
     plan = agent_output.get("plan") or {}

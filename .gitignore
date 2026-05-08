@@ -18,5 +18,5 @@ wheels/
 
 # 方案
 *实施方案.md
-docs/superpowers/*
+docs/superpowers/specs/*.md
 docs/optional*

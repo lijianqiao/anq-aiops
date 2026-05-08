@@ -1,3 +1,6 @@
+from datetime import datetime
+from typing import Any
+
 from src.activities.feishu import build_feishu_card, build_feishu_card_with_agent
 from src.models import Alert
 
@@ -11,12 +14,12 @@ def _make_alert() -> Alert:
         host_ip="192.168.198.130",
         trigger_id="10001",
         message="Disk usage is 95% on /tmp",
-        timestamp="2026-04-30T14:30:00Z",
+        timestamp=datetime.fromisoformat("2026-04-30T14:30:00+00:00"),
         status="problem",
     )
 
 
-def _basic_plan() -> dict:
+def _basic_plan() -> dict[str, Any]:
     return {
         "runbook_id": "disk_cleanup",
         "params": {"target_host": "192.168.198.130", "path": "/tmp", "min_age_days": 7},
@@ -26,14 +29,14 @@ def _basic_plan() -> dict:
     }
 
 
-def _basic_trace() -> list[dict]:
+def _basic_trace() -> list[dict[str, Any]]:
     return [
         {"turn": 0, "tool": "get_disk_usage", "args": {"host": "192.168.198.130"}, "result_preview": "/tmp 91%"},
         {"turn": 1, "tool": "get_directory_sizes", "args": {"paths": ["/tmp", "/var/log"]}, "result_preview": "5.5G /tmp"},
     ]
 
 
-def _approval_policy() -> dict:
+def _approval_policy() -> dict[str, Any]:
     return {"decision": "approval_required", "matched_policy": "default", "reason": ""}
 
 

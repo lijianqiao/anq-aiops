@@ -1,5 +1,14 @@
+"""
+@Author: li
+@Email: lijianqiao2906@live.com
+@FileName: models.py
+@DateTime: 2026-05-08 14:10:00
+@Docs: 定义告警、执行结果、审计、LLM 输出和策略决策等数据模型
+"""
+
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -33,7 +42,7 @@ class ExecutionResult(BaseModel):
     dry_run: RunbookResult
     execute: RunbookResult
     verify: bool
-    snapshot: dict
+    snapshot: dict[str, Any]
     rolled_back: bool = False
 
 
@@ -44,7 +53,7 @@ class AuditRecord(BaseModel):
     workflow_id: str
     decision: str  # approved / rejected / timeout
     runbook_id: str | None
-    runbook_params: dict | None
+    runbook_params: dict[str, Any] | None
     execution_result: ExecutionResult | None
     feishu_message_id: str | None
     created_at: datetime
@@ -57,7 +66,7 @@ class RCAResult(BaseModel):
     root_cause: str
     confidence: float
     recommended_runbook: str
-    params: dict
+    params: dict[str, Any]
     reasoning: str
 
 
@@ -65,13 +74,13 @@ class ActionPlan(BaseModel):
     """执行计划（ReAct agent 输出）"""
 
     runbook_id: str
-    params: dict
+    params: dict[str, Any]
     risk_level: str
     requires_approval: bool
     reasoning: str
     # ReAct agent 调用工具的轨迹（每条含 turn / tool / args / result_preview 等）
     # 用于飞书卡片展示 + 审计回溯，不影响执行逻辑
-    trace: list[dict] = []
+    trace: list[dict[str, Any]] = []
     confidence: float = 0.0
 
 
@@ -87,10 +96,10 @@ class RiskEvaluation(BaseModel):
 # ---- Phase 3: Policy 层 ----
 
 
-class Decision(str, Enum):
+class Decision(StrEnum):
     """Policy 评估决策
 
-    继承 str 让 Pydantic 在 JSON 序列化时输出小写字符串而非枚举字面量，
+    继承 StrEnum 让 Pydantic 在 JSON 序列化时输出小写字符串而非枚举字面量，
     YAML 配置里也能直接写 "allow" / "deny" 而不用引用 Python 类。
     """
 

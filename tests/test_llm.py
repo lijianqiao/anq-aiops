@@ -1,29 +1,60 @@
-import sys
+"""
+@Author: li
+@Email: lijianqiao2906@live.com
+@FileName: test_llm.py
+@DateTime: 2026-05-08 14:36:00
+@Docs: 测试 LLM 客户端、熔断器和主备路由行为
+"""
+
+import json
 import time
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
 
+from src.llm.agent import AgentLimitExceeded
 from src.llm.circuit_breaker import CircuitBreaker, CircuitBreakerOpen
-from src.llm.router import LLMRouter, LLMUnavailable
-
-
-@pytest.fixture(autouse=True)
-def _mock_llm_deps():
-    """Mock openai/anthropic packages since they are not installed yet."""
-    mock_openai = MagicMock()
-    mock_anthropic = MagicMock()
-    with patch.dict(sys.modules, {"openai": mock_openai, "anthropic": mock_anthropic}):
-        yield
-
-
 from src.llm.client import AnthropicClient, LLMClient, OpenAICompatibleClient
+from src.llm.router import LLMRouter, LLMUnavailable
+from src.models import Alert
 
 
 class SampleResponse(BaseModel):
     answer: str
     score: float
+
+
+def _agent_alert() -> Alert:
+    return Alert(
+        event_id="evt-1",
+        event_name="Disk usage > 90%",
+        severity="high",
+        hostname="aiops-target",
+        host_ip="192.168.198.130",
+        trigger_id="t-1",
+        message="Disk usage is 95% on /tmp",
+        timestamp=datetime.fromisoformat("2026-05-07T10:00:00+00:00"),
+        status="problem",
+    )
+
+
+def _propose_tool_call(path: str = "/tmp") -> dict[str, object]:
+    return {
+        "id": "call_1",
+        "type": "function",
+        "function": {
+            "name": "propose_action",
+            "arguments": json.dumps({
+                "runbook_id": "disk_cleanup",
+                "params": {"target_host": "192.168.198.130", "path": path, "min_age_days": 7},
+                "reasoning": "备用模型诊断成功",
+                "confidence": 0.95,
+                "risk_level": "low",
+            }),
+        },
+    }
 
 
 def test_openai_client_inherits_llm_client():
@@ -46,10 +77,10 @@ async def test_openai_client_chat_json():
 
     with patch.object(client, "_client") as mock_openai:
         mock_openai.chat.completions.create = AsyncMock(return_value=mock_response)
-        result = await client.chat_json(
+        result = SampleResponse.model_validate(await client.chat_json(
             messages=[{"role": "user", "content": "test"}],
             schema=SampleResponse,
-        )
+        ))
 
     assert isinstance(result, SampleResponse)
     assert result.answer == "yes"
@@ -67,10 +98,10 @@ async def test_openai_client_chat_json_strips_markdown_fence():
 
     with patch.object(client, "_client") as mock_openai:
         mock_openai.chat.completions.create = AsyncMock(return_value=mock_response)
-        result = await client.chat_json(
+        result = SampleResponse.model_validate(await client.chat_json(
             messages=[{"role": "user", "content": "test"}],
             schema=SampleResponse,
-        )
+        ))
 
     assert result.answer == "yes"
 
@@ -175,7 +206,7 @@ async def test_router_uses_primary():
     fallback = AsyncMock(spec=LLMClient)
 
     router = LLMRouter(primary=primary, fallback=fallback)
-    result = await router.invoke("test", SampleResponse)
+    result = SampleResponse.model_validate(await router.invoke("test", SampleResponse))
 
     assert result.answer == "ok"
     primary.chat_json.assert_called_once()
@@ -190,7 +221,7 @@ async def test_router_falls_back_on_primary_failure():
     fallback.chat_json.return_value = SampleResponse(answer="fallback", score=0.5)
 
     router = LLMRouter(primary=primary, fallback=fallback)
-    result = await router.invoke("test", SampleResponse)
+    result = SampleResponse.model_validate(await router.invoke("test", SampleResponse))
 
     assert result.answer == "fallback"
     primary.chat_json.assert_called_once()
@@ -236,8 +267,45 @@ async def test_router_skips_primary_when_circuit_open():
     assert cb.state == "OPEN"
 
     router = LLMRouter(primary=primary, fallback=fallback, circuit_breaker=cb)
-    result = await router.invoke("test", SampleResponse)
+    result = SampleResponse.model_validate(await router.invoke("test", SampleResponse))
 
     assert result.answer == "fallback"
     primary.chat_json.assert_not_called()
     fallback.chat_json.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_router_agent_falls_back_on_primary_failure():
+    primary = AsyncMock(spec=LLMClient)
+    primary.chat_with_tools.side_effect = AgentLimitExceeded("primary failed")
+    fallback = AsyncMock(spec=LLMClient)
+    fallback.chat_with_tools.return_value = {"content": None, "tool_calls": [_propose_tool_call()]}
+
+    router = LLMRouter(primary=primary, fallback=fallback)
+    result = await router.diagnose_with_agent(_agent_alert())
+
+    assert result.plan is not None
+    assert result.plan.runbook_id == "disk_cleanup"
+    primary.chat_with_tools.assert_called_once()
+    fallback.chat_with_tools.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_router_agent_failure_records_circuit_breaker_and_skips_primary_after_open():
+    primary = AsyncMock(spec=LLMClient)
+    primary.chat_with_tools.side_effect = AgentLimitExceeded("primary failed")
+    fallback = AsyncMock(spec=LLMClient)
+    fallback.chat_with_tools.return_value = {"content": None, "tool_calls": [_propose_tool_call()]}
+    cb = CircuitBreaker(threshold=0.3, window_sec=60)
+    cb.record_success()
+    cb.record_success()
+
+    router = LLMRouter(primary=primary, fallback=fallback, circuit_breaker=cb)
+    first_result = await router.diagnose_with_agent(_agent_alert())
+    second_result = await router.diagnose_with_agent(_agent_alert())
+
+    assert first_result.plan is not None
+    assert second_result.plan is not None
+    assert cb.state == "OPEN"
+    assert primary.chat_with_tools.call_count == 1
+    assert fallback.chat_with_tools.call_count == 2

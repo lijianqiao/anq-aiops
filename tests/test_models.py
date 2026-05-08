@@ -152,12 +152,12 @@ def test_policy_result_requires_all_fields():
     from src.models import PolicyResult
 
     with pytest.raises(ValidationError):
-        PolicyResult(matched_policy="x", reason="y")  # 缺 decision
+        PolicyResult.model_validate({"matched_policy": "x", "reason": "y"})  # 缺 decision
 
 
 def test_policy_result_decision_is_typed():
     """字符串值会被强制成 Decision 枚举"""
     from src.models import Decision, PolicyResult
 
-    r = PolicyResult(decision="allow", matched_policy="x", reason="y")
+    r = PolicyResult.model_validate({"decision": "allow", "matched_policy": "x", "reason": "y"})
     assert r.decision is Decision.ALLOW

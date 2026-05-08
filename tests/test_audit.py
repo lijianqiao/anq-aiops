@@ -1,5 +1,6 @@
 import json
 from datetime import datetime
+from pathlib import Path
 
 import pytest
 
@@ -9,7 +10,7 @@ from src.models import Alert
 
 
 @pytest.mark.asyncio
-async def test_write_audit_persists_jsonl(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_write_audit_persists_jsonl(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     audit_path = tmp_path / "audit.jsonl"
     monkeypatch.setattr(settings, "audit_log_path", str(audit_path))
     alert_json = Alert(

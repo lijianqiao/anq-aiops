@@ -1,3 +1,13 @@
+"""
+@Author: li
+@Email: lijianqiao2906@live.com
+@FileName: service_restart.py
+@DateTime: 2026-05-08 14:33:00
+@Docs: 服务重启 Runbook 参数校验、执行与验证逻辑
+"""
+
+from typing import Any
+
 from pydantic import BaseModel, Field
 
 from src.models import RunbookResult
@@ -34,7 +44,7 @@ class ServiceRestartRunbook(BaseRunbook):
             extravars={"target_host": p.target_host, "service_name": p.service_name},
         )
 
-    def rollback(self, snapshot: dict) -> bool:
+    def rollback(self, snapshot: dict[str, Any]) -> bool:
         return False
 
     def verify(self, params: BaseModel) -> bool:

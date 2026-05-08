@@ -1,18 +1,29 @@
-"""LLM Activity：现在统一走 ReAct agent，一次 activity 完成 RCA + plan + risk
+"""
+@Author: li
+@Email: lijianqiao2906@live.com
+@FileName: llm.py
+@DateTime: 2026-05-08 14:31:00
+@Docs: 封装 Temporal LLM Activity，调用 ReAct Agent 完成告警诊断
+
+LLM Activity：现在统一走 ReAct agent，一次 activity 完成 RCA + plan + risk
 
 旧的 rca_analyze / plan_action / evaluate_risk 三个独立 activity 已废弃，
 agent 在多轮 tool calling 中自己完成观察 → 推理 → 决策。
 """
 
 import json
+import logging
 
 from temporalio import activity
 
-from src.llm.agent import AgentLimitExceeded, DiagnosticAgent
+from src.llm.agent import AgentLimitExceeded
+from src.llm.router import LLMRouter, LLMUnavailable
 from src.models import Alert
 
+logger = logging.getLogger(__name__)
+
 # 模块级 router，由 main.py lifespan 初始化
-llm_router = None
+llm_router: LLMRouter | None = None
 
 
 @activity.defn
@@ -29,13 +40,13 @@ async def agent_diagnose(alert_json: str) -> str:
     if llm_router is None:
         raise RuntimeError("llm_router not initialized")
 
-    client = llm_router.select_client_for_agent()
-    agent = DiagnosticAgent(llm_client=client, max_turns=5)
-
     try:
-        result = await agent.diagnose(alert)
-    except AgentLimitExceeded:
+        result = await llm_router.diagnose_with_agent(alert, max_turns=5)
+    except (AgentLimitExceeded, LLMUnavailable):
         # 让 workflow 走 fallback（关键词匹配）路径
+        return json.dumps({"plan": None, "trace": [], "agent_failed": True})
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(f"Agent 诊断异常，降级到关键词匹配: {exc}")
         return json.dumps({"plan": None, "trace": [], "agent_failed": True})
 
     plan_dict = result.plan.model_dump() if result.plan else None

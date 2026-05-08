@@ -1,3 +1,5 @@
+from collections.abc import Generator
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -8,7 +10,7 @@ from src.main import app
 
 
 @pytest.fixture
-def zabbix_payload() -> dict:
+def zabbix_payload() -> dict[str, Any]:
     return {
         "event_id": "12345",
         "event_name": "Disk usage > 90%",
@@ -23,7 +25,7 @@ def zabbix_payload() -> dict:
 
 
 @pytest.fixture(autouse=True)
-def _mock_app_state(monkeypatch: pytest.MonkeyPatch):
+def _mock_app_state(monkeypatch: pytest.MonkeyPatch) -> Generator[None]:
     monkeypatch.setattr(settings, "zabbix_webhook_token", "test-zabbix-token")
     app.state.redis = MagicMock()
     app.state.temporal = MagicMock()
@@ -37,7 +39,7 @@ def _zabbix_headers() -> dict[str, str]:
 
 
 @pytest.mark.asyncio
-async def test_zabbix_webhook_success(zabbix_payload: dict) -> None:
+async def test_zabbix_webhook_success(zabbix_payload: dict[str, Any]) -> None:
     with patch("src.api.webhook.produce_alert", new_callable=AsyncMock) as mock_produce:
         mock_produce.return_value = "1234567890-0"
 
@@ -52,7 +54,7 @@ async def test_zabbix_webhook_success(zabbix_payload: dict) -> None:
 
 
 @pytest.mark.asyncio
-async def test_zabbix_webhook_duplicate(zabbix_payload: dict) -> None:
+async def test_zabbix_webhook_duplicate(zabbix_payload: dict[str, Any]) -> None:
     with patch("src.api.webhook.produce_alert", new_callable=AsyncMock) as mock_produce:
         mock_produce.return_value = None
 
@@ -75,7 +77,7 @@ async def test_zabbix_webhook_invalid_payload() -> None:
 
 
 @pytest.mark.asyncio
-async def test_zabbix_webhook_rejects_invalid_token(zabbix_payload: dict) -> None:
+async def test_zabbix_webhook_rejects_invalid_token(zabbix_payload: dict[str, Any]) -> None:
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         resp = await client.post("/webhook/zabbix", json=zabbix_payload, headers={"X-Zabbix-Token": "bad"})

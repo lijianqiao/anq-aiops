@@ -1,9 +1,19 @@
+"""
+@Author: li
+@Email: lijianqiao2906@live.com
+@FileName: router.py
+@DateTime: 2026-05-08 14:31:00
+@Docs: 提供 LLM 主备路由、熔断与 Agent 诊断降级能力
+"""
+
 import logging
 
 from pydantic import BaseModel
 
+from src.llm.agent import AgentResult, DiagnosticAgent
 from src.llm.circuit_breaker import CircuitBreaker, CircuitBreakerOpen
 from src.llm.client import LLMClient
+from src.models import Alert
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +78,32 @@ class LLMRouter:
             return self.primary
         return self.fallback
 
+    async def diagnose_with_agent(self, alert: Alert, max_turns: int = 5) -> AgentResult:
+        """使用 ReAct Agent 诊断告警，主模型失败时重试备用模型。
+
+        Agent 的多轮 tool calling 会绑定单个客户端；因此失败后用备用模型重新开始一次诊断，
+        不在同一轮对话中途切换客户端。
+        """
+        if self.circuit_breaker is None or self._primary_allowed():
+            try:
+                result = await DiagnosticAgent(self.primary, max_turns=max_turns).diagnose(alert)
+                if self.circuit_breaker:
+                    self.circuit_breaker.record_success()
+                return result
+            except Exception as exc:
+                logger.warning(f"Primary Agent LLM failed: {exc}")
+                if self.circuit_breaker:
+                    self.circuit_breaker.record_failure()
+
+        try:
+            return await DiagnosticAgent(self.fallback, max_turns=max_turns).diagnose(alert)
+        except Exception as exc:
+            logger.error(f"Fallback Agent LLM failed: {exc}")
+            raise LLMUnavailable("主备模型均无法完成 Agent 诊断") from exc
+
     def _primary_allowed(self) -> bool:
+        if self.circuit_breaker is None:
+            return True
         try:
             self.circuit_breaker.check()
             return True

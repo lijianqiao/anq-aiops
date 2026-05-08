@@ -96,4 +96,4 @@ async def test_reclaim_pending_alert(alert: Alert) -> None:
     assert result is not None
     reclaimed_alert, msg_id = result
     assert reclaimed_alert.event_id == alert.event_id
-    assert msg_id == b"1-0"
+    assert msg_id == "1-0"

@@ -1,4 +1,7 @@
 import json
+from collections.abc import Callable, Sequence
+from datetime import datetime
+from typing import Any
 
 import pytest
 from temporalio import activity
@@ -20,7 +23,7 @@ def _alert_json(event_name: str = "Disk usage > 90%") -> str:
         host_ip="192.168.198.130",
         trigger_id="10001",
         message="Disk usage is 95% on /tmp",
-        timestamp="2026-04-30T14:30:00Z",
+        timestamp=datetime.fromisoformat("2026-04-30T14:30:00+00:00"),
         status="problem",
     ).model_dump_json()
 
@@ -90,7 +93,7 @@ async def mock_execute_runbook(runbook_id: str, params_json: str) -> str:
     })
 
 
-ALL_ACTIVITIES = [
+ALL_ACTIVITIES: Sequence[Callable[..., Any]] = [
     mock_agent_diagnose, mock_evaluate_policy,
     mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
     mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
@@ -99,42 +102,40 @@ ALL_ACTIVITIES = [
 
 @pytest.mark.asyncio
 async def test_workflow_approved_with_agent():
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        async with Worker(
-            env.client,
+    async with await WorkflowEnvironment.start_time_skipping() as env, Worker(
+        env.client,
+        task_queue=TASK_QUEUE,
+        workflows=[AlertWorkflow],
+        activities=ALL_ACTIVITIES,
+    ):
+        handle = await env.client.start_workflow(
+            AlertWorkflow.run,
+            _alert_json(),
+            id="test-approved-agent",
             task_queue=TASK_QUEUE,
-            workflows=[AlertWorkflow],
-            activities=ALL_ACTIVITIES,
-        ):
-            handle = await env.client.start_workflow(
-                AlertWorkflow.run,
-                _alert_json(),
-                id="test-approved-agent",
-                task_queue=TASK_QUEUE,
-            )
-            await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=True))
-            result = await handle.result()
-            assert result == "approved"
+        )
+        await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=True))
+        result = await handle.result()
+        assert result == "approved"
 
 
 @pytest.mark.asyncio
 async def test_workflow_rejected():
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        async with Worker(
-            env.client,
+    async with await WorkflowEnvironment.start_time_skipping() as env, Worker(
+        env.client,
+        task_queue=TASK_QUEUE,
+        workflows=[AlertWorkflow],
+        activities=ALL_ACTIVITIES,
+    ):
+        handle = await env.client.start_workflow(
+            AlertWorkflow.run,
+            _alert_json(),
+            id="test-rejected",
             task_queue=TASK_QUEUE,
-            workflows=[AlertWorkflow],
-            activities=ALL_ACTIVITIES,
-        ):
-            handle = await env.client.start_workflow(
-                AlertWorkflow.run,
-                _alert_json(),
-                id="test-rejected",
-                task_queue=TASK_QUEUE,
-            )
-            await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=False))
-            result = await handle.result()
-            assert result == "rejected"
+        )
+        await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=False))
+        result = await handle.result()
+        assert result == "rejected"
 
 
 @pytest.mark.asyncio
@@ -145,27 +146,26 @@ async def test_workflow_falls_back_when_agent_fails():
     async def failing_agent(alert_json: str) -> str:
         raise RuntimeError("agent crashed")
 
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        async with Worker(
-            env.client,
+    async with await WorkflowEnvironment.start_time_skipping() as env, Worker(
+        env.client,
+        task_queue=TASK_QUEUE,
+        workflows=[AlertWorkflow],
+        activities=[
+            failing_agent,
+            mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
+            mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+            mock_evaluate_policy,
+        ],
+    ):
+        handle = await env.client.start_workflow(
+            AlertWorkflow.run,
+            _alert_json(),
+            id="test-degraded",
             task_queue=TASK_QUEUE,
-            workflows=[AlertWorkflow],
-            activities=[
-                failing_agent,
-                mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
-                mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
-                mock_evaluate_policy,
-            ],
-        ):
-            handle = await env.client.start_workflow(
-                AlertWorkflow.run,
-                _alert_json(),
-                id="test-degraded",
-                task_queue=TASK_QUEUE,
-            )
-            await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=True))
-            result = await handle.result()
-            assert result == "approved"
+        )
+        await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=True))
+        result = await handle.result()
+        assert result == "approved"
 
 
 @pytest.mark.asyncio
@@ -189,31 +189,30 @@ async def test_workflow_unsupported_when_no_runbook_match():
         host_ip="192.168.198.130",
         trigger_id="t-999",
         message="Sensor reading unusual",
-        timestamp="2026-04-30T14:30:00Z",
+        timestamp=datetime.fromisoformat("2026-04-30T14:30:00+00:00"),
         status="problem",
     ).model_dump_json()
 
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        async with Worker(
-            env.client,
+    async with await WorkflowEnvironment.start_time_skipping() as env, Worker(
+        env.client,
+        task_queue=TASK_QUEUE,
+        workflows=[AlertWorkflow],
+        activities=[
+            failing_agent,
+            mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
+            mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+            mock_evaluate_policy,
+        ],
+    ):
+        handle = await env.client.start_workflow(
+            AlertWorkflow.run,
+            no_match_alert,
+            id="test-unsupported",
             task_queue=TASK_QUEUE,
-            workflows=[AlertWorkflow],
-            activities=[
-                failing_agent,
-                mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
-                mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
-                mock_evaluate_policy,
-            ],
-        ):
-            handle = await env.client.start_workflow(
-                AlertWorkflow.run,
-                no_match_alert,
-                id="test-unsupported",
-                task_queue=TASK_QUEUE,
-            )
-            await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=True))
-            result = await handle.result()
-            assert result == "unsupported"
+        )
+        await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=True))
+        result = await handle.result()
+        assert result == "unsupported"
 
 
 @pytest.mark.asyncio
@@ -224,27 +223,26 @@ async def test_workflow_handles_agent_choosing_none():
     async def none_agent(alert_json: str) -> str:
         return json.dumps({"plan": None, "trace": [{"turn": 0, "tool": "list_failed_services"}]})
 
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        async with Worker(
-            env.client,
+    async with await WorkflowEnvironment.start_time_skipping() as env, Worker(
+        env.client,
+        task_queue=TASK_QUEUE,
+        workflows=[AlertWorkflow],
+        activities=[
+            none_agent,
+            mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
+            mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+            mock_evaluate_policy,
+        ],
+    ):
+        handle = await env.client.start_workflow(
+            AlertWorkflow.run,
+            _alert_json(),  # 磁盘告警，关键词降级到 disk_cleanup
+            id="test-agent-none",
             task_queue=TASK_QUEUE,
-            workflows=[AlertWorkflow],
-            activities=[
-                none_agent,
-                mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
-                mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
-                mock_evaluate_policy,
-            ],
-        ):
-            handle = await env.client.start_workflow(
-                AlertWorkflow.run,
-                _alert_json(),  # 磁盘告警，关键词降级到 disk_cleanup
-                id="test-agent-none",
-                task_queue=TASK_QUEUE,
-            )
-            await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=True))
-            result = await handle.result()
-            assert result == "approved"
+        )
+        await handle.signal(AlertWorkflow.approve, ApprovalDecision(approved=True))
+        result = await handle.result()
+        assert result == "approved"
 
 
 # ---- Phase 3 Task 8: Policy 三分支 ----
@@ -258,26 +256,25 @@ async def test_workflow_denied_by_policy():
     async def deny_policy(runbook_id, runbook_params_json, alert_json, plan_json):
         return '{"decision":"deny","matched_policy":"deny_critical","reason":"禁止操作"}'
 
-    async with await WorkflowEnvironment.start_time_skipping() as env:
-        async with Worker(
-            env.client,
+    async with await WorkflowEnvironment.start_time_skipping() as env, Worker(
+        env.client,
+        task_queue=TASK_QUEUE,
+        workflows=[AlertWorkflow],
+        activities=[
+            mock_agent_diagnose, deny_policy,
+            mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
+            mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
+        ],
+    ):
+        handle = await env.client.start_workflow(
+            AlertWorkflow.run,
+            _alert_json(),
+            id="test-denied",
             task_queue=TASK_QUEUE,
-            workflows=[AlertWorkflow],
-            activities=[
-                mock_agent_diagnose, deny_policy,
-                mock_send_feishu_alert_with_agent, mock_send_feishu_alert,
-                mock_send_feishu_result, mock_write_audit, mock_execute_runbook,
-            ],
-        ):
-            handle = await env.client.start_workflow(
-                AlertWorkflow.run,
-                _alert_json(),
-                id="test-denied",
-                task_queue=TASK_QUEUE,
-            )
-            # 故意不发审批信号 —— deny 应该直接返回，不阻塞
-            result = await handle.result()
-            assert result == "denied"
+        )
+        # 故意不发审批信号 —— deny 应该直接返回，不阻塞
+        result = await handle.result()
+        assert result == "denied"
 
 
 @pytest.mark.asyncio

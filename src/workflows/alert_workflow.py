@@ -1,6 +1,15 @@
+"""
+@Author: li
+@Email: lijianqiao2906@live.com
+@FileName: alert_workflow.py
+@DateTime: 2026-05-08 14:33:00
+@Docs: 定义告警处置 Temporal Workflow 与审批信号处理流程
+"""
+
 import json
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import Any, cast
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
@@ -18,7 +27,7 @@ _KNOWN_RUNBOOKS = frozenset({"disk_cleanup", "service_restart"})
 _NOTIFY_RETRY = RetryPolicy(maximum_attempts=5)
 
 
-def _select_runbook(alert: dict) -> str | None:
+def _select_runbook(alert: dict[str, Any]) -> str | None:
     """Agent 失败时的 fallback：从 event_name + message 用关键词选 Runbook
 
     覆盖 Zabbix 7.0 模板默认触发器名（如 "Linux: FS [/]: Space is critically low"）
@@ -60,7 +69,7 @@ class AlertWorkflow:
 
     @workflow.run
     async def run(self, alert_json: str) -> str:
-        alert = json.loads(alert_json)
+        alert = cast(dict[str, Any], json.loads(alert_json))
         event_id = alert["event_id"]
         workflow_id = workflow.info().workflow_id
 
@@ -214,24 +223,32 @@ class AlertWorkflow:
     async def _safe_agent_call(self, alert_json: str) -> str:
         """调用 agent_diagnose，失败时返回标记 agent_failed=True 的占位 JSON"""
         try:
-            return await workflow.execute_activity(
+            return cast(str, await workflow.execute_activity(
                 "agent_diagnose",
                 args=[alert_json],
                 start_to_close_timeout=timedelta(minutes=5),  # agent 多轮 + 远端 ansible 调用，给足时间
                 retry_policy=RetryPolicy(maximum_attempts=2),
-            )
+            ))
         except Exception:
             workflow.logger.warning("agent_diagnose failed, falling back to keyword-match runbook selection")
             return json.dumps({"plan": None, "trace": [], "agent_failed": True})
 
-    def _parse_agent_output(self, agent_output_json: str) -> tuple[dict | None, list]:
+    def _parse_agent_output(self, agent_output_json: str) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
         try:
             data = json.loads(agent_output_json)
-            return data.get("plan"), data.get("trace") or []
+            if not isinstance(data, dict):
+                return None, []
+            plan = data.get("plan")
+            trace = data.get("trace") or []
+            return (plan if isinstance(plan, dict) else None), (trace if isinstance(trace, list) else [])
         except Exception:
             return None, []
 
-    def _resolve_runbook(self, plan_dict: dict | None, alert: dict) -> tuple[str | None, str]:
+    def _resolve_runbook(
+        self,
+        plan_dict: dict[str, Any] | None,
+        alert: dict[str, Any],
+    ) -> tuple[str | None, str]:
         """根据 agent plan 决定 runbook_id + 序列化后的 params
 
         三层兜底：
@@ -240,28 +257,28 @@ class AlertWorkflow:
           3. 关键词也匹配不上 → 返回 (None, ...)
         """
         if plan_dict and plan_dict.get("runbook_id") in _KNOWN_RUNBOOKS:
-            runbook_id = plan_dict["runbook_id"]
-            raw_params = plan_dict.get("params") if isinstance(plan_dict.get("params"), dict) else {}
-            raw_params = dict(raw_params)
+            runbook_id = str(plan_dict["runbook_id"])
+            params_from_plan = plan_dict.get("params")
+            raw_params = dict(params_from_plan) if isinstance(params_from_plan, dict) else {}
             # target_host 永远以 alert 真实 IP 为准，不信 LLM
             raw_params["target_host"] = alert["host_ip"]
             return runbook_id, json.dumps(raw_params)
 
         # 降级路径
-        runbook_id = _select_runbook(alert)
-        if runbook_id is None:
+        fallback_runbook_id = _select_runbook(alert)
+        if fallback_runbook_id is None:
             return None, json.dumps({})
 
         # 提供最小默认参数让 runbook 能跑（path / service_name 走 schema 默认值或抽取）
-        raw_params: dict = {"target_host": alert["host_ip"]}
-        if runbook_id == "service_restart":
+        fallback_params: dict[str, Any] = {"target_host": alert["host_ip"]}
+        if fallback_runbook_id == "service_restart":
             name_lower = alert.get("event_name", "").lower()
             for svc in ("nginx", "redis-server", "redis", "mysql", "postgresql",
                         "postgres", "apache2", "docker", "ssh", "sshd"):
                 if svc in name_lower:
-                    raw_params["service_name"] = svc
+                    fallback_params["service_name"] = svc
                     break
-        return runbook_id, json.dumps(raw_params)
+        return fallback_runbook_id, json.dumps(fallback_params)
 
     @workflow.signal
     def approve(self, decision: ApprovalDecision) -> None:

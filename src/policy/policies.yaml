@@ -71,16 +71,16 @@ policies:
     effect: allow
     conditions:
       - runbook_id: disk_cleanup
-      - params.path: { in: ["/tmp", "/var/tmp", "/var/log", "/var/cache", "/opt/cache"] }
+      - params.path: { in: ["/tmp", "/var/log", "/var/cache"] }
       - risk_level: low
       - confidence: { gte: 0.9 }
 
   - name: low_risk_stateless_service_restart
-    description: 无状态服务（nginx / redis-server）重启 + 低风险 + 高置信度 → 自动
+    description: 无状态服务 nginx 重启 + 低风险 + 高置信度 → 自动
     effect: allow
     conditions:
       - runbook_id: service_restart
-      - params.service_name: { in: ["nginx", "redis-server"] }
+      - params.service_name: { in: ["nginx"] }
       - risk_level: low
       - confidence: { gte: 0.9 }
 

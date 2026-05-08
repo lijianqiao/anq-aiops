@@ -1,6 +1,17 @@
-"""Policy 引擎单元测试"""
+"""
+@Author: li
+@Email: lijianqiao2906@live.com
+@FileName: test_policy_engine.py
+@DateTime: 2026-05-08 14:37:00
+@Docs: 测试 Policy 引擎规则匹配、主机分级和真实策略配置一致性
+"""
+
+import textwrap
+from pathlib import Path
+from typing import Any, cast
 
 import pytest
+import yaml
 
 from src.config import settings
 
@@ -178,10 +189,7 @@ def test_match_condition_multiple_keys_all_must_match():
 # ---- evaluate_policy ----
 
 
-import textwrap
-
-
-def _write_policy(tmp_path, yaml_content: str):
+def _write_policy(tmp_path: Path, yaml_content: str) -> Path:
     """写一个临时 policy yaml 并返回路径"""
     p = tmp_path / "policies.yaml"
     p.write_text(textwrap.dedent(yaml_content), encoding="utf-8")
@@ -356,7 +364,7 @@ def test_evaluate_policy_invalid_yaml_raises(tmp_path, monkeypatch):
     p.write_text("not: yaml: [broken", encoding="utf-8")
     monkeypatch.setattr(settings, "policy_config_path", str(p))
 
-    with pytest.raises(Exception):
+    with pytest.raises(yaml.YAMLError):
         evaluate_policy(runbook_id="x", params={}, alert={}, plan={})
 
 
@@ -391,3 +399,53 @@ def test_evaluate_policy_top_level_shortcuts_in_context(tmp_path, monkeypatch):
     )
     assert result.decision == Decision.APPROVAL_REQUIRED
     assert result.matched_policy == "cf_check"
+
+
+def _load_real_policy_file() -> list[dict[str, Any]]:
+    """读取仓库内真实策略配置"""
+    policy_path = Path(__file__).parents[1] / "src" / "policy" / "policies.yaml"
+    data = yaml.safe_load(policy_path.read_text(encoding="utf-8")) or {}
+    return cast(list[dict[str, Any]], data["policies"])
+
+
+def _condition_value(policy: dict[str, Any], field: str) -> Any:
+    """从规则 conditions 中取指定字段的期望值"""
+    for condition in policy.get("conditions") or []:
+        if field in condition:
+            return condition[field]
+    return None
+
+
+def test_real_policy_disk_cleanup_allow_paths_match_runbook_schema():
+    """真实策略允许自动清理的路径必须能通过 Runbook 参数校验"""
+    from src.runbooks.disk_cleanup import DiskCleanupParams
+
+    policies = _load_real_policy_file()
+    for policy in policies:
+        if policy.get("effect") != "allow" or _condition_value(policy, "runbook_id") != "disk_cleanup":
+            continue
+        path_rule = _condition_value(policy, "params.path")
+        assert isinstance(path_rule, dict)
+        for path in path_rule["in"]:
+            DiskCleanupParams(target_host="192.168.198.130", path=path)
+
+
+def test_real_policy_service_restart_allow_does_not_conflict_with_deny():
+    """真实策略中同一服务不能既被拒绝又被自动放行"""
+    policies = _load_real_policy_file()
+    denied_services: set[str] = set()
+    allowed_services: set[str] = set()
+
+    for policy in policies:
+        if _condition_value(policy, "runbook_id") != "service_restart":
+            continue
+        service_rule = _condition_value(policy, "params.service_name")
+        if not isinstance(service_rule, dict):
+            continue
+        services = set(service_rule.get("in") or [])
+        if policy.get("effect") == "deny":
+            denied_services.update(services)
+        if policy.get("effect") == "allow":
+            allowed_services.update(services)
+
+    assert denied_services.isdisjoint(allowed_services)

@@ -1,4 +1,13 @@
+"""
+@Author: li
+@Email: lijianqiao2906@live.com
+@FileName: disk_cleanup.py
+@DateTime: 2026-05-08 14:33:00
+@Docs: 磁盘清理 Runbook 参数校验、执行与验证逻辑
+"""
+
 import re
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -38,7 +47,7 @@ class DiskCleanupRunbook(BaseRunbook):
             extravars={"target_host": p.target_host, "path": p.path, "min_age_days": p.min_age_days},
         )
 
-    def rollback(self, snapshot: dict) -> bool:
+    def rollback(self, snapshot: dict[str, Any]) -> bool:
         return False
 
     def verify(self, params: BaseModel) -> bool:

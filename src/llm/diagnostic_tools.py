@@ -1,4 +1,11 @@
-"""ReAct Agent 可调用的只读诊断工具
+"""
+@Author: li
+@Email: lijianqiao2906@live.com
+@FileName: diagnostic_tools.py
+@DateTime: 2026-05-08 14:31:00
+@Docs: 提供 ReAct Agent 可调用的只读诊断工具及 OpenAI 工具 schema
+
+ReAct Agent 可调用的只读诊断工具
 
 设计原则：
 - 只暴露具名工具（get_disk_usage 等），不暴露通用 run_command
@@ -12,6 +19,8 @@
 import asyncio
 import re
 import shlex
+from collections.abc import Awaitable, Callable
+from typing import Any
 
 from src.config import settings
 
@@ -20,6 +29,7 @@ _HOST_RE = re.compile(r"^[A-Za-z0-9._\-]{1,64}$")
 _SERVICE_RE = re.compile(r"^[A-Za-z0-9._\-@]{1,64}$")
 _SAFE_PATH_RE = re.compile(r"^/[A-Za-z0-9._/\-]{0,128}$")
 _TOOL_RESULT_LIMIT = 4000
+ToolHandler = Callable[..., Awaitable[str]]
 
 
 def _validate_host(host: str) -> str:
@@ -122,7 +132,7 @@ async def list_failed_services(host: str) -> str:
 
 # ---------- OpenAI tool schema ----------
 
-DIAGNOSTIC_TOOLS: list[dict] = [
+DIAGNOSTIC_TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
@@ -232,7 +242,7 @@ DIAGNOSTIC_TOOLS: list[dict] = [
 
 
 # 工具名 → 异步处理函数映射
-TOOL_HANDLERS = {
+TOOL_HANDLERS: dict[str, ToolHandler] = {
     "get_disk_usage": get_disk_usage,
     "get_directory_sizes": get_directory_sizes,
     "get_service_status": get_service_status,

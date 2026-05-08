@@ -1,4 +1,11 @@
-"""Policy 评估 Activity
+"""
+@Author: li
+@Email: lijianqiao2906@live.com
+@FileName: policy.py
+@DateTime: 2026-05-08 14:33:00
+@Docs: 将 Policy 规则评估封装为 Temporal Activity
+
+Policy 评估 Activity
 
 把 evaluate_policy 包装成 Temporal Activity：
   - 输入/输出全用 JSON 字符串（Temporal 友好）
@@ -8,6 +15,7 @@
 
 import json
 import logging
+from typing import Any
 
 from temporalio import activity
 
@@ -17,7 +25,7 @@ from src.policy.engine import evaluate_policy
 logger = logging.getLogger(__name__)
 
 
-def _safe_json_loads(text: str | None, default):
+def _safe_json_loads(text: str | None, default: Any) -> Any:
     """解析 JSON，失败或空字符串 / "null" 时返回 default"""
     if not text:
         return default

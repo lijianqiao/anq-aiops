@@ -1,3 +1,11 @@
+"""
+@Author: li
+@Email: lijianqiao2906@live.com
+@FileName: client.py
+@DateTime: 2026-05-08 14:31:00
+@Docs: 定义 LLM 客户端抽象及 OpenAI/Anthropic 兼容实现
+"""
+
 import re
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any, cast
@@ -66,7 +74,7 @@ class LLMClient(ABC):
     async def chat_with_tools(
         self,
         messages: list[dict[str, Any]],
-        tools: list[dict],
+        tools: list[dict[str, Any]],
         model: str | None = None,
         timeout: float = 30,
     ) -> dict[str, Any]:
@@ -119,11 +127,12 @@ class OpenAICompatibleClient(LLMClient):
     async def chat_with_tools(
         self,
         messages: list[dict[str, Any]],
-        tools: list[dict],
+        tools: list[dict[str, Any]],
         model: str | None = None,
         timeout: float = 30,
     ) -> dict[str, Any]:
-        response = await self._client.chat.completions.create(
+        create_completion = cast(Any, self._client.chat.completions.create)
+        response = await create_completion(
             model=model or self.default_model,
             messages=_build_openai_messages(messages),
             tools=tools,
@@ -185,5 +194,5 @@ class AnthropicClient(LLMClient):
         # 寻找第一个 text block（避免未来出现 tool_use 时 content[0] 不是 text）
         for block in response.content:
             if getattr(block, "type", None) == "text":
-                return block.text
+                return cast(str, block.text)
         raise RuntimeError("Anthropic response has no text block")

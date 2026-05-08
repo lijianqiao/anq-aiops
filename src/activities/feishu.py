@@ -1,6 +1,15 @@
+"""
+@Author: li
+@Email: lijianqiao2906@live.com
+@FileName: feishu.py
+@DateTime: 2026-05-08 14:33:00
+@Docs: 构建飞书告警卡片并通过飞书 IM 接口发送告警与处置结果
+"""
+
 import asyncio
 import json
 import time
+from typing import Any, cast
 
 import httpx
 from temporalio import activity
@@ -9,6 +18,7 @@ from src.config import settings
 from src.models import Alert
 
 _FEISHU_BASE = "https://open.feishu.cn/open-apis"
+FeishuCard = dict[str, Any]
 
 
 class _TokenManager:
@@ -50,7 +60,7 @@ _SEVERITY_EMOJI = {
 }
 
 
-def _action_button(text: str, btn_type: str, workflow_id: str, action: str, alert_id: str) -> dict:
+def _action_button(text: str, btn_type: str, workflow_id: str, action: str, alert_id: str) -> FeishuCard:
     return {
         "tag": "button",
         "text": {"tag": "plain_text", "content": text},
@@ -59,7 +69,7 @@ def _action_button(text: str, btn_type: str, workflow_id: str, action: str, aler
     }
 
 
-def _alert_header_elements(alert: Alert) -> list[dict]:
+def _alert_header_elements(alert: Alert) -> list[FeishuCard]:
     """卡片顶部告警事实区"""
     return [
         {
@@ -76,7 +86,7 @@ def _alert_header_elements(alert: Alert) -> list[dict]:
     ]
 
 
-def build_feishu_card(alert: Alert, workflow_id: str) -> dict:
+def build_feishu_card(alert: Alert, workflow_id: str) -> FeishuCard:
     """无 AI 分析时的简卡（agent 失败 / 选 none 时用）"""
     emoji = _SEVERITY_EMOJI.get(alert.severity, "⚪")
     elements = _alert_header_elements(alert)
@@ -98,7 +108,7 @@ def build_feishu_card(alert: Alert, workflow_id: str) -> dict:
     }
 
 
-def _format_trace(trace: list[dict], max_entries: int = 8) -> str:
+def _format_trace(trace: list[dict[str, Any]], max_entries: int = 8) -> str:
     """把 agent trace 渲染成简短的 markdown 列表"""
     if not trace:
         return "_（无诊断步骤）_"
@@ -119,7 +129,7 @@ def _format_trace(trace: list[dict], max_entries: int = 8) -> str:
     return "\n".join(lines)
 
 
-def _format_policy_label(decision: str, mode: str, policy: dict) -> str:
+def _format_policy_label(decision: str, mode: str, policy: dict[str, Any]) -> str:
     """渲染 policy 决策标签到飞书卡片"""
     rule = policy.get("matched_policy", "default")
     reason = policy.get("reason", "")
@@ -138,10 +148,10 @@ def _format_policy_label(decision: str, mode: str, policy: dict) -> str:
 def build_feishu_card_with_agent(
     alert: Alert,
     workflow_id: str,
-    plan: dict,
-    trace: list[dict],
-    policy: dict | None = None,
-) -> dict:
+    plan: dict[str, Any],
+    trace: list[dict[str, Any]],
+    policy: dict[str, Any] | None = None,
+) -> FeishuCard:
     """带 agent 诊断结果 + Policy 决策标签的卡片"""
     emoji = _SEVERITY_EMOJI.get(alert.severity, "⚪")
 
@@ -183,7 +193,7 @@ def build_feishu_card_with_agent(
 
     # 按钮策略：DENY 不展示按钮（执行被拒）；ALLOW + live 不展示（自动执行）；
     # 其它（APPROVAL_REQUIRED / ALLOW + shadow）展示批准/拒绝按钮
-    actions: list[dict] = []
+    actions: list[FeishuCard] = []
     if decision != "deny" and not (decision == "allow" and settings.aiops_mode == "live"):
         actions = [
             _action_button("按建议执行", "primary", workflow_id, "approve", alert.event_id),
@@ -195,7 +205,7 @@ def build_feishu_card_with_agent(
                 _action_button("⚠️ 高风险 - 人工处理", "default", workflow_id, "reject", alert.event_id),
             )
 
-    elements: list[dict] = [
+    elements: list[FeishuCard] = [
         *_alert_header_elements(alert),
         {"tag": "hr"},
         ai_section,
@@ -214,7 +224,7 @@ def build_feishu_card_with_agent(
     }
 
 
-async def _post_im_message(*, msg_type: str, content: dict) -> str:
+async def _post_im_message(*, msg_type: str, content: dict[str, Any]) -> str:
     """通过 IM v1 接口发消息，返回 message_id"""
     if not settings.feishu_receive_id:
         raise RuntimeError("FEISHU_RECEIVE_ID is not configured")
@@ -249,7 +259,7 @@ async def _post_im_message(*, msg_type: str, content: dict) -> str:
             f"msg={data.get('msg')!r} payload_receive_id={settings.feishu_receive_id} "
             f"payload_receive_id_type={settings.feishu_receive_id_type}"
         )
-    return data["data"]["message_id"]
+    return cast(str, data["data"]["message_id"])
 
 
 @activity.defn
@@ -270,8 +280,12 @@ async def send_feishu_alert_with_agent(
     """推送带 ReAct agent 诊断结果 + Policy 决策标签的卡片"""
     alert = Alert.model_validate_json(alert_json)
     agent_output = json.loads(agent_output_json)
-    plan = agent_output.get("plan") or {}
-    trace = agent_output.get("trace") or []
+    if not isinstance(agent_output, dict):
+        agent_output = {}
+    raw_plan = agent_output.get("plan") or {}
+    raw_trace = agent_output.get("trace") or []
+    plan = raw_plan if isinstance(raw_plan, dict) else {}
+    trace = raw_trace if isinstance(raw_trace, list) else []
     try:
         policy = json.loads(policy_result_json) if policy_result_json else {}
     except json.JSONDecodeError:

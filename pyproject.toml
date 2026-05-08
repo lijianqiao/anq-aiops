@@ -28,6 +28,7 @@ dev = [
     "ruff>=0.15.12",
     "mypy>=1.20.2",
     "respx>=0.23.1",
+    "types-pyyaml>=6.0.12.20260508",
 ]
 
 [tool.ruff]
@@ -53,6 +54,10 @@ disallow_incomplete_defs = true
 [[tool.mypy.overrides]]
 module = "tests.*"
 disallow_untyped_defs = false
+
+[[tool.mypy.overrides]]
+module = ["ansible_runner", "lark_oapi", "lark_oapi.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

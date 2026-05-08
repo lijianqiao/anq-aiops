@@ -1,4 +1,11 @@
-"""ReAct 诊断 Agent
+"""
+@Author: li
+@Email: lijianqiao2906@live.com
+@FileName: agent.py
+@DateTime: 2026-05-08 14:31:00
+@Docs: 实现 ReAct 诊断 Agent 的工具调用循环和执行计划生成
+
+ReAct 诊断 Agent
 
 流程：
   1. 收到 alert，给 LLM
@@ -16,8 +23,9 @@
 
 import json
 import logging
-from typing import Any
+from typing import Any, cast
 
+from src.llm.client import LLMClient
 from src.llm.diagnostic_tools import DIAGNOSTIC_TOOLS, TOOL_HANDLERS
 from src.models import ActionPlan, Alert
 
@@ -53,7 +61,7 @@ class AgentLimitExceeded(Exception):
 class AgentResult:
     """Agent 输出：plan 可能是 None 表示 LLM 选择了 'none'（不修复仅通知）"""
 
-    def __init__(self, plan: ActionPlan | None, trace: list[dict]):
+    def __init__(self, plan: ActionPlan | None, trace: list[dict[str, Any]]):
         self.plan = plan
         self.trace = trace
 
@@ -70,12 +78,13 @@ def _format_alert(alert: Alert) -> str:
     )
 
 
-async def _execute_tool(name: str, raw_args: str) -> tuple[str, dict]:
+async def _execute_tool(name: str, raw_args: str) -> tuple[str, dict[str, Any]]:
     """执行一个工具调用，返回 (展示给 LLM 的字符串, 给 trace 用的结构化 dict)"""
     try:
-        args = json.loads(raw_args) if raw_args else {}
+        parsed_args = json.loads(raw_args) if raw_args else {}
     except json.JSONDecodeError as exc:
         return f"tool args parse error: {exc}", {"error": "args parse error"}
+    args = parsed_args if isinstance(parsed_args, dict) else {}
 
     handler = TOOL_HANDLERS.get(name)
     if handler is None:
@@ -93,7 +102,9 @@ async def _execute_tool(name: str, raw_args: str) -> tuple[str, dict]:
 
 
 class DiagnosticAgent:
-    def __init__(self, llm_client: Any, max_turns: int = 5, timeout_per_call: float = 60):
+    """基于 LLM tool calling 的告警诊断 Agent"""
+
+    def __init__(self, llm_client: LLMClient, max_turns: int = 5, timeout_per_call: float = 60) -> None:
         self.llm = llm_client
         self.max_turns = max_turns
         self.timeout_per_call = timeout_per_call
@@ -103,7 +114,7 @@ class DiagnosticAgent:
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": _format_alert(alert)},
         ]
-        trace: list[dict] = []
+        trace: list[dict[str, Any]] = []
 
         for turn in range(self.max_turns):
             response = await self.llm.chat_with_tools(
@@ -137,9 +148,10 @@ class DiagnosticAgent:
                 fn_name = tc["function"]["name"]
                 if fn_name == "propose_action":
                     try:
-                        args = json.loads(tc["function"]["arguments"])
+                        parsed_args = json.loads(tc["function"]["arguments"])
                     except json.JSONDecodeError as exc:
                         raise AgentLimitExceeded(f"propose_action args parse error: {exc}") from exc
+                    args = parsed_args if isinstance(parsed_args, dict) else {}
                     trace.append({"turn": turn, "tool": "propose_action", "args": args})
                     return _build_result(args, trace)
 
@@ -161,17 +173,18 @@ class DiagnosticAgent:
         raise AgentLimitExceeded(f"agent did not converge in {self.max_turns} turns")
 
 
-def _build_result(propose_args: dict, trace: list[dict]) -> AgentResult:
-    runbook_id = propose_args.get("runbook_id")
+def _build_result(propose_args: dict[str, Any], trace: list[dict[str, Any]]) -> AgentResult:
+    runbook_id = cast(str | None, propose_args.get("runbook_id"))
     if runbook_id == "none":
         return AgentResult(plan=None, trace=trace)
 
+    params = propose_args.get("params")
     plan = ActionPlan(
         runbook_id=runbook_id or "",
-        params=propose_args.get("params") or {},
-        risk_level=propose_args.get("risk_level", "medium"),
+        params=params if isinstance(params, dict) else {},
+        risk_level=str(propose_args.get("risk_level", "medium")),
         requires_approval=True,
-        reasoning=propose_args.get("reasoning", ""),
+        reasoning=str(propose_args.get("reasoning", "")),
         trace=trace,
         confidence=float(propose_args.get("confidence", 0.0)),
     )

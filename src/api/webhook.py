@@ -1,5 +1,14 @@
+"""
+@Author: li
+@Email: lijianqiao2906@live.com
+@FileName: webhook.py
+@DateTime: 2026-05-08 14:33:00
+@Docs: 提供 Zabbix 告警 Webhook 接入与鉴权接口
+"""
+
 import hmac
 import logging
+from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -23,7 +32,7 @@ def _require_zabbix_auth(request: Request) -> None:
 
 
 @router.post("/webhook/zabbix")
-async def zabbix_webhook(alert: Alert, request: Request):
+async def zabbix_webhook(alert: Alert, request: Request) -> dict[str, Any]:
     _require_zabbix_auth(request)
     redis = request.app.state.redis
     msg_id = await produce_alert(redis, alert)

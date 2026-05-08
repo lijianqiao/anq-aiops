@@ -1,6 +1,8 @@
 """ReAct DiagnosticAgent 单元测试"""
 
 import json
+from datetime import datetime
+from typing import Any
 from unittest.mock import AsyncMock
 
 import pytest
@@ -18,12 +20,12 @@ def _alert() -> Alert:
         host_ip="192.168.198.130",
         trigger_id="t-1",
         message="Disk usage is 95% on /tmp",
-        timestamp="2026-05-07T10:00:00Z",
+        timestamp=datetime.fromisoformat("2026-05-07T10:00:00+00:00"),
         status="problem",
     )
 
 
-def _tool_call(name: str, args: dict, call_id: str = "call_1") -> dict:
+def _tool_call(name: str, args: dict[str, Any], call_id: str = "call_1") -> dict[str, Any]:
     return {
         "id": call_id,
         "type": "function",
@@ -50,9 +52,10 @@ async def test_agent_terminates_on_propose_action():
     agent = DiagnosticAgent(client, max_turns=5)
     result = await agent.diagnose(_alert())
 
-    assert result.plan is not None
-    assert result.plan.runbook_id == "disk_cleanup"
-    assert result.plan.params["path"] == "/tmp"
+    plan = result.plan
+    assert plan is not None
+    assert plan.runbook_id == "disk_cleanup"
+    assert plan.params["path"] == "/tmp"
     assert client.chat_with_tools.call_count == 1
 
 
@@ -86,7 +89,9 @@ async def test_agent_calls_tool_then_proposes():
         from src.llm.diagnostic_tools import get_disk_usage
         diagnostic_tools.TOOL_HANDLERS["get_disk_usage"] = get_disk_usage
 
-    assert result.plan.runbook_id == "disk_cleanup"
+    plan = result.plan
+    assert plan is not None
+    assert plan.runbook_id == "disk_cleanup"
     # trace 应包含两步：get_disk_usage + propose_action
     tool_names = [t["tool"] for t in result.trace]
     assert "get_disk_usage" in tool_names

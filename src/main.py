@@ -1,4 +1,13 @@
+"""
+@Author: li
+@Email: lijianqiao2906@live.com
+@FileName: main.py
+@DateTime: 2026-05-08 14:33:00
+@Docs: 初始化 FastAPI 应用、Redis、Temporal Worker 和后台消费循环
+"""
+
 import asyncio
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 
 import redis.asyncio as aioredis
@@ -24,7 +33,7 @@ import src.activities.llm as llm_activities
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     redis_client = aioredis.from_url(settings.redis_url)
     app.state.redis = redis_client
 
@@ -76,5 +85,5 @@ app.include_router(webhook_router)
 
 
 @app.get("/health")
-async def health():
+async def health() -> dict[str, str]:
     return {"status": "ok"}

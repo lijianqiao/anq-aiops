@@ -207,3 +207,90 @@ def test_probe_llm_down(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert ok is False
     assert "503" in msg
+
+
+def test_healthcheck_run_once_all_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    """所有 probe 都健康时不发送告警"""
+    from meta_monitor import probes
+    from meta_monitor.healthcheck import run_once
+
+    sent: list[str] = []
+    monkeypatch.setattr(
+        probes,
+        "PROBES",
+        {
+            "p1": lambda: (True, "p1 ok"),
+            "p2": lambda: (True, "p2 ok"),
+        },
+    )
+    monkeypatch.setattr("meta_monitor.healthcheck.send_alert", lambda msg: sent.append(msg))
+
+    failures = run_once()
+    assert failures == []
+    assert sent == []
+
+
+def test_healthcheck_run_once_one_failure_sends_alert(monkeypatch: pytest.MonkeyPatch) -> None:
+    """任一 probe 失败时发送包含失败原因的告警"""
+    from meta_monitor import probes
+    from meta_monitor.healthcheck import _alert_state, run_once
+
+    sent: list[str] = []
+    _alert_state.clear()
+    monkeypatch.setattr(
+        probes,
+        "PROBES",
+        {
+            "ok_one": lambda: (True, "ok_one ok"),
+            "broken": lambda: (False, "broken: connection refused"),
+        },
+    )
+    monkeypatch.setattr("meta_monitor.healthcheck.send_alert", lambda msg: sent.append(msg))
+
+    failures = run_once()
+    assert failures == ["broken"]
+    assert len(sent) == 1
+    assert "broken" in sent[0]
+    assert "connection refused" in sent[0]
+
+
+def test_healthcheck_dedup_within_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    """同一组件连续失败时，5 分钟内只发送一次失败告警"""
+    from meta_monitor import probes
+    from meta_monitor.healthcheck import _alert_state, run_once
+
+    sent: list[str] = []
+    _alert_state.clear()
+    monkeypatch.setattr(probes, "PROBES", {"broken": lambda: (False, "broken: down")})
+    monkeypatch.setattr("meta_monitor.healthcheck.send_alert", lambda msg: sent.append(msg))
+
+    run_once()
+    run_once()
+    run_once()
+
+    assert len(sent) == 1
+
+
+def test_healthcheck_recovery_sends_recovery_alert(monkeypatch: pytest.MonkeyPatch) -> None:
+    """组件从失败恢复到健康时发送一条恢复消息"""
+    from meta_monitor import probes
+    from meta_monitor.healthcheck import _alert_state, run_once
+
+    sent: list[str] = []
+    state = {"healthy": False}
+
+    def flaky() -> tuple[bool, str]:
+        return (True, "broken ok") if state["healthy"] else (False, "broken: down")
+
+    _alert_state.clear()
+    monkeypatch.setattr(probes, "PROBES", {"broken": flaky})
+    monkeypatch.setattr("meta_monitor.healthcheck.send_alert", lambda msg: sent.append(msg))
+
+    run_once()
+    assert len(sent) == 1
+    assert "down" in sent[0].lower() or "broken" in sent[0]
+
+    state["healthy"] = True
+    run_once()
+    assert len(sent) == 2
+    assert "recover" in sent[1].lower() or "ok" in sent[1].lower()

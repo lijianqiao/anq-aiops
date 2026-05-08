@@ -6,8 +6,11 @@
 @Docs: 定义 Runbook 基类和 Ansible 执行封装
 """
 
+import shutil
+import tempfile
 import time
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any
 
 from pydantic import BaseModel
@@ -38,18 +41,33 @@ def run_ansible(playbook: str, extravars: dict[str, Any], check: bool = False) -
     import ansible_runner
 
     start = time.monotonic()
-    r = ansible_runner.run(
-        private_data_dir=settings.ansible_private_data_dir,
-        playbook=playbook,
-        inventory=settings.ansible_inventory,
-        extravars=extravars,
-        **({"cmdline": "--check"} if check else {}),
-    )
+    source_dir = Path(settings.ansible_private_data_dir)
+    source_playbook = Path(playbook)
+    if not source_playbook.is_absolute():
+        source_playbook = source_dir / source_playbook
+    source_inventory = Path(settings.ansible_inventory)
+
+    with tempfile.TemporaryDirectory(prefix="aiops-runner-") as runner_dir:
+        runner_path = Path(runner_dir)
+        runner_playbook = runner_path / source_playbook.name
+        runner_inventory = runner_path / source_inventory.name
+        shutil.copy2(source_playbook, runner_playbook)
+        shutil.copy2(source_inventory, runner_inventory)
+
+        r = ansible_runner.run(
+            private_data_dir=str(runner_path),
+            playbook=runner_playbook.name,
+            inventory=runner_inventory.name,
+            extravars=extravars,
+            **({"cmdline": "--check"} if check else {}),
+        )
+        stdout = _read_runner_stream(getattr(r, "stdout", None))
+        stderr = _read_runner_stream(getattr(r, "stderr", None))
+        success = r.status == "successful"
+
     duration = time.monotonic() - start
-    stdout = _read_runner_stream(getattr(r, "stdout", None))
-    stderr = _read_runner_stream(getattr(r, "stderr", None))
     return RunbookResult(
-        success=r.status == "successful",
+        success=success,
         stdout=stdout,
         stderr=stderr,
         duration_sec=round(duration, 2),

@@ -1,109 +1,191 @@
 # AIOps
 
-> 告警进来，AI 诊断给建议，人点一下执行，机器自动修。
+[中文文档](README_zh.md)
 
-智能告警处置平台：Zabbix 告警 → LLM 根因分析 → 飞书审批 → Ansible 自动修复。
+AIOps is an intelligent alert remediation platform that connects Zabbix alerts, LLM-based diagnosis, Feishu approvals, Temporal workflows, Redis Streams, PostgreSQL knowledge storage, and Ansible runbooks into a controlled human-in-the-loop operations pipeline.
 
-## 架构
+It is designed for small infrastructure teams that want repeatable incident handling: alerts are correlated and rate-limited, diagnosis is explainable, risky actions require approval, execution is audited, and successful or rejected cases become reusable operational knowledge.
 
+## Features
+
+- Zabbix webhook ingestion with token authentication.
+- Redis Stream buffering and deduplication.
+- Temporal workflow orchestration for alert handling.
+- LLM diagnostic agent with primary/fallback routing and circuit breaker protection.
+- Policy engine with live/shadow execution modes.
+- Feishu interactive approval cards and result notifications.
+- Ansible runbook execution with isolated runner directories.
+- Multi-agent coordination: alert correlation, storm protection, pending workflow guard, and per-host action mutex.
+- Hermes knowledge layer backed by PostgreSQL for historical case retrieval and feedback injection.
+- Phase 8 SOP loop: incident summaries, rejected-decision feedback, SOP candidate generation, and optional GitHub PR automation.
+- Meta-monitoring channel for AIOps self-health alerts.
+
+## Architecture
+
+```text
+Zabbix
+  -> FastAPI /webhook/zabbix
+  -> Redis Stream
+  -> Alert consumer
+  -> Temporal AlertWorkflow
+       -> LLM diagnostic agent
+       -> Policy evaluation
+       -> Feishu approval
+       -> Host action mutex
+       -> Ansible runbook
+       -> Verification
+       -> Audit + Hermes knowledge
+       -> Incident summary + SOP feedback loop
 ```
-Zabbix Webhook
-     ↓
-  FastAPI (ingest)
-     ↓
-  Redis Stream (buffer)
-     ↓
-  Temporal Workflow
-     ├── LLM RCA 分析 (rca_analyze)
-     ├── LLM Action Plan (plan_action)
-     ├── LLM Risk Evaluation (evaluate_risk)
-     ├── 飞书卡片推送 (AI 分析 + 审批按钮)
-     ├── 等待人工审批
-     ├── Ansible Runbook 执行
-     └── 审计日志
-```
 
-## 技术栈
+## Tech Stack
 
-| 层         | 技术                                           |
-| ---------- | ---------------------------------------------- |
-| API        | FastAPI + Uvicorn                              |
-| 工作流引擎 | Temporal                                       |
-| 消息总线   | Redis Stream                                   |
-| LLM        | OpenAI / Anthropic / DeepSeek / 本地 llama.cpp |
-| 通知       | 飞书机器人 Webhook                             |
-| 自动化     | Ansible Runner                                 |
-| 数据库     | PostgreSQL (Temporal)                          |
+| Layer | Technology |
+| --- | --- |
+| API | FastAPI, Uvicorn |
+| Workflow | Temporal |
+| Message bus | Redis Streams |
+| Knowledge store | PostgreSQL, asyncpg, full-text search |
+| LLM | OpenAI-compatible APIs, Anthropic, local fallback |
+| Notification and approval | Feishu Open Platform |
+| Automation | Ansible Runner |
+| Scheduler | APScheduler |
+| Tooling | uv, pytest, Ruff, mypy |
 
-## 快速开始
+## Quick Start
+
+### 1. Configure environment
 
 ```bash
-# 1. 配置环境变量
 cp .env.example .env
-# 编辑 .env 填入飞书 Webhook、LLM API Key 等
+```
 
-# 2. 启动所有服务
-docker compose up -d
+Edit `.env` and set at least:
 
-# 3. 测试告警
+```bash
+ZABBIX_WEBHOOK_TOKEN=change-me-to-a-strong-token
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=xxx
+FEISHU_RECEIVE_ID=oc_xxx
+FEISHU_RECEIVE_ID_TYPE=chat_id
+LLM_PRIMARY_API_KEY=sk-xxx
+```
+
+If you only want to start the app without Feishu callbacks, leave `FEISHU_APP_ID` and `FEISHU_APP_SECRET` empty.
+
+### 2. Start services
+
+```bash
+docker compose up -d postgres redis temporal aiops
+```
+
+Check health:
+
+```bash
+curl http://localhost:8000/health
+```
+
+Expected:
+
+```json
+{"status":"ok"}
+```
+
+### 3. Send a test alert
+
+```bash
+TOKEN="$(grep '^ZABBIX_WEBHOOK_TOKEN=' .env | cut -d= -f2-)"
+
 curl -X POST http://localhost:8000/webhook/zabbix \
   -H "Content-Type: application/json" \
-  -H "X-Zabbix-Token: $ZABBIX_WEBHOOK_TOKEN" \
+  -H "X-Zabbix-Token: ${TOKEN}" \
   -d '{
     "event_id": "test-001",
     "event_name": "Disk usage > 90%",
     "severity": "high",
-    "hostname": "web-server-01",
-    "host_ip": "192.168.1.13",
+    "hostname": "aiops-target",
+    "host_ip": "192.168.198.130",
     "trigger_id": "10001",
     "message": "Disk usage is 95% on /tmp",
-    "timestamp": "2026-05-01T10:00:00Z",
+    "timestamp": "2026-05-09T00:00:00+08:00",
     "status": "problem"
   }'
 ```
 
-## 项目结构
+## Development
 
+Install dependencies:
+
+```bash
+uv sync --extra dev
 ```
+
+Run the application locally against Docker services:
+
+```bash
+export TEMPORAL_ADDRESS=localhost:7233
+export REDIS_URL=redis://localhost:6379/0
+export FEISHU_APP_ID=
+export FEISHU_APP_SECRET=
+uv run uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
+```
+
+Run checks:
+
+```bash
+uv run pytest tests/ -q
+uv run ruff check src/ tests/
+uv run mypy src/
+```
+
+## Repository Layout
+
+```text
 src/
-├── main.py                 # FastAPI 入口 + Temporal Worker
-├── config.py               # 环境变量配置
-├── models.py               # Pydantic 数据模型
-├── api/webhook.py          # Zabbix/飞书 Webhook 端点
-├── bus/
-│   ├── producer.py         # Redis Stream 生产者
-│   └── consumer.py         # Redis Stream 消费者
-├── workflows/
-│   └── alert_workflow.py   # Temporal 主工作流
-├── activities/
-│   ├── feishu.py           # 飞书卡片推送
-│   ├── llm.py              # LLM 分析 Activities
-│   ├── runbook.py          # Runbook 执行
-│   └── audit.py            # 审计日志
-├── llm/
-│   ├── client.py           # LLM 客户端抽象 (OpenAI/Anthropic)
-│   ├── router.py           # 主备模型切换
-│   ├── circuit_breaker.py  # 熔断器
-│   └── prompts.py          # Prompt 模板
-└── runbooks/
-    ├── base.py             # Runbook 基类
-    ├── disk_cleanup.py     # 磁盘清理
-    └── service_restart.py  # 服务重启
+  api/             FastAPI routes
+  activities/      Temporal activities: LLM, Feishu, runbook, audit, SOP
+  bus/             Redis Stream producer and consumer
+  coordination/    rate limiting, pending gauge, action mutex
+  correlator/      alert correlation
+  hermes/          PostgreSQL knowledge and feedback layer
+  llm/             LLM clients, router, diagnostic agent
+  policy/          policy engine and YAML rules
+  runbooks/        runbook implementations
+  scheduler/       APScheduler jobs
+  sop/             SOP markdown and PR helpers
+  workflows/       Temporal workflows
+docs/              architecture, operations, and testing docs
+tests/             unit and integration tests
 ```
 
-## 环境变量
+## Key Configuration
 
-参见 `.env.example`。核心配置：
+See `.env.example` for the full list.
 
-| 变量                    | 说明                             |
-| ----------------------- | -------------------------------- |
-| `FEISHU_WEBHOOK_URL`    | 飞书机器人 Webhook 地址          |
-| `LLM_PRIMARY_PROVIDER`  | 主 LLM 供应商 (openai/anthropic) |
-| `LLM_PRIMARY_API_KEY`   | 主 LLM API Key                   |
-| `LLM_FALLBACK_BASE_URL` | 备用 LLM 地址 (本地 llama.cpp)   |
+| Variable | Purpose |
+| --- | --- |
+| `ZABBIX_WEBHOOK_TOKEN` | Required token for `/webhook/zabbix`; sent via `X-Zabbix-Token` or `Authorization: Bearer ...`. |
+| `FEISHU_APP_ID`, `FEISHU_APP_SECRET` | Feishu app credentials for sending cards and receiving approval callbacks. |
+| `FEISHU_RECEIVE_ID`, `FEISHU_RECEIVE_ID_TYPE` | Default Feishu recipient. |
+| `LLM_PRIMARY_*`, `LLM_FALLBACK_*` | Primary and fallback model configuration. |
+| `AIOPS_MODE` | `live` executes allowed actions automatically; `shadow` keeps approvals in the loop. |
+| `HERMES_DB_URL` | PostgreSQL DSN for historical case storage. |
+| `GITHUB_TOKEN` | Optional token for automatic SOP PR creation. |
+| `SOP_GEN_SCHEDULE_HOUR` | Daily SOP generation hour; set to `-1` to disable. |
 
-## 笔记
+## Deployment and Testing Docs
 
-- `/webhook/zabbix`需要`ZABBIX_WEBHOOK_TOKEN`通过`X-Zabbix-Token`或`Authorization: Bearer ...`.
-- `/webhook/feishu` 需要飞书回调签名头和 `FEISHU_WEBHOOK_SECRET`.
-- 提醒重复数据删除用途`event_id`作为具有 1 小时 TTL 的密钥。重复的一个`PROBLEM -> RECOVERY -> PROBLEM`循环相同`event_id`该窗口内的内容被视为重复
+- `docs/AIOps 集群说明.md`: four-VM lab environment setup.
+- `docs/zabbix-integration.md`: Zabbix webhook media type setup.
+- `docs/policy-mode.md`: policy and live/shadow mode.
+- `docs/multi-agent-coordination.md`: correlation, storm protection, and mutex verification.
+- `docs/hermes-knowledge.md`: PostgreSQL knowledge layer operations.
+- `docs/sop-feedback.md`: SOP and feedback loop operations.
+- `docs/superpowers/specs/phase8-cluster-test-guide.md`: Phase 8 cluster acceptance test steps.
+
+## Security Notes
+
+- Never commit `.env` or real API keys.
+- Keep `ZABBIX_WEBHOOK_TOKEN` strong and synchronized between AIOps and Zabbix.
+- Review all generated SOP PRs before merging.
+- Keep production runbooks small, auditable, and protected by policy rules.

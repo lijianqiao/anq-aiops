@@ -37,6 +37,16 @@ class Settings(BaseSettings):
     llm_timeout: float = 30
     llm_circuit_breaker_threshold: float = 0.3
 
+    # Phase 3: Policy 层
+    # AIOps 模式：live=按 policy 决策执行（默认）；shadow=只观察不真自动执行（调试新规则用）
+    aiops_mode: str = "live"
+    # 主机分级（逗号分隔的 IP 列表）；不在两者中的主机默认归 dev
+    # VM3 (192.168.198.130) 是测试机，留空使其归 dev
+    production_hosts: str = ""
+    staging_hosts: str = ""
+    # Policy 配置文件路径（容器内绝对路径）
+    policy_config_path: str = "/app/src/policy/policies.yaml"
+
     # extra="ignore"：允许 .env 里残留旧字段（如 FEISHU_WEBHOOK_URL）不报错，方便平滑切换
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8", "extra": "ignore"}
 

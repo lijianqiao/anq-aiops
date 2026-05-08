@@ -44,8 +44,12 @@ async def test_agent_diagnose_returns_plan_and_trace():
     async def fake_diagnose(_self, _alert):
         return AgentResult(plan=plan, trace=trace)
 
-    # 给 module 级 llm_router 一个非 None 占位（否则会被 RuntimeError 拦截）
-    with patch.object(llm_activity, "llm_router", object()), \
+    # 给 module 级 llm_router 一个 mock（有 select_client_for_agent 即可，
+    # 实际 client 因为 DiagnosticAgent.diagnose 被 mock 不会用到）
+    from unittest.mock import MagicMock
+    fake_router = MagicMock()
+    fake_router.select_client_for_agent.return_value = MagicMock()
+    with patch.object(llm_activity, "llm_router", fake_router), \
          patch("src.llm.agent.DiagnosticAgent.diagnose", new=fake_diagnose):
         result_json = await llm_activity.agent_diagnose(_alert_json())
 
@@ -63,7 +67,10 @@ async def test_agent_diagnose_handles_none_plan():
     async def fake_diagnose(_self, _alert):
         return AgentResult(plan=None, trace=[{"turn": 0, "tool": "list_failed_services"}])
 
-    with patch.object(llm_activity, "llm_router", object()), \
+    from unittest.mock import MagicMock
+    fake_router = MagicMock()
+    fake_router.select_client_for_agent.return_value = MagicMock()
+    with patch.object(llm_activity, "llm_router", fake_router), \
          patch("src.llm.agent.DiagnosticAgent.diagnose", new=fake_diagnose):
         result_json = await llm_activity.agent_diagnose(_alert_json())
 
@@ -81,7 +88,10 @@ async def test_agent_diagnose_handles_agent_failure():
     async def failing_diagnose(_self, _alert):
         raise AgentLimitExceeded("did not converge")
 
-    with patch.object(llm_activity, "llm_router", object()), \
+    from unittest.mock import MagicMock
+    fake_router = MagicMock()
+    fake_router.select_client_for_agent.return_value = MagicMock()
+    with patch.object(llm_activity, "llm_router", fake_router), \
          patch("src.llm.agent.DiagnosticAgent.diagnose", new=failing_diagnose):
         result_json = await llm_activity.agent_diagnose(_alert_json())
 

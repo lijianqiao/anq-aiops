@@ -119,8 +119,30 @@ def _format_trace(trace: list[dict], max_entries: int = 8) -> str:
     return "\n".join(lines)
 
 
-def build_feishu_card_with_agent(alert: Alert, workflow_id: str, plan: dict, trace: list[dict]) -> dict:
-    """带 agent 诊断结果的卡片：展示推理 + 工具轨迹 + 计划"""
+def _format_policy_label(decision: str, mode: str, policy: dict) -> str:
+    """渲染 policy 决策标签到飞书卡片"""
+    rule = policy.get("matched_policy", "default")
+    reason = policy.get("reason", "")
+
+    if decision == "deny":
+        return f"🚫 拒绝执行（规则 `{rule}`）：{reason}"
+    if decision == "allow":
+        if mode == "live":
+            return f"🤖 自动执行（规则 `{rule}`，无需审批）"
+        # shadow
+        return f"🌓 Shadow 模式：本应自动执行（规则 `{rule}`）但仍走人工审批"
+    # approval_required 或其它默认
+    return f"👤 需要人工审批（规则 `{rule}`）：{reason or '默认走审批'}"
+
+
+def build_feishu_card_with_agent(
+    alert: Alert,
+    workflow_id: str,
+    plan: dict,
+    trace: list[dict],
+    policy: dict | None = None,
+) -> dict:
+    """带 agent 诊断结果 + Policy 决策标签的卡片"""
     emoji = _SEVERITY_EMOJI.get(alert.severity, "⚪")
 
     confidence = float(plan.get("confidence") or 0)
@@ -132,6 +154,10 @@ def build_feishu_card_with_agent(alert: Alert, workflow_id: str, plan: dict, tra
     params = plan.get("params") or {}
     reasoning = plan.get("reasoning", "")
 
+    policy = policy or {}
+    decision = policy.get("decision", "approval_required")
+    policy_label = _format_policy_label(decision, settings.aiops_mode, policy)
+
     ai_section = {
         "tag": "div",
         "text": {
@@ -141,7 +167,8 @@ def build_feishu_card_with_agent(alert: Alert, workflow_id: str, plan: dict, tra
                 f"结论：{reasoning}\n"
                 f"置信度：{confidence_pct} | 风险：{risk_label}\n"
                 f"建议 Runbook：`{runbook_id}`\n"
-                f"参数：`{params}`"
+                f"参数：`{params}`\n"
+                f"**Policy：**{policy_label}"
             ),
         },
     }
@@ -154,27 +181,36 @@ def build_feishu_card_with_agent(alert: Alert, workflow_id: str, plan: dict, tra
         },
     }
 
-    actions = [
-        _action_button("按建议执行", "primary", workflow_id, "approve", alert.event_id),
-        _action_button("拒绝", "danger", workflow_id, "reject", alert.event_id),
+    # 按钮策略：DENY 不展示按钮（执行被拒）；ALLOW + live 不展示（自动执行）；
+    # 其它（APPROVAL_REQUIRED / ALLOW + shadow）展示批准/拒绝按钮
+    actions: list[dict] = []
+    if decision != "deny" and not (decision == "allow" and settings.aiops_mode == "live"):
+        actions = [
+            _action_button("按建议执行", "primary", workflow_id, "approve", alert.event_id),
+            _action_button("拒绝", "danger", workflow_id, "reject", alert.event_id),
+        ]
+        if risk_level == "high":
+            actions.insert(
+                1,
+                _action_button("⚠️ 高风险 - 人工处理", "default", workflow_id, "reject", alert.event_id),
+            )
+
+    elements: list[dict] = [
+        *_alert_header_elements(alert),
+        {"tag": "hr"},
+        ai_section,
+        {"tag": "hr"},
+        trace_section,
     ]
-    if risk_level == "high":
-        actions.insert(1, _action_button("⚠️ 高风险 - 人工处理", "default", workflow_id, "reject", alert.event_id))
+    if actions:
+        elements += [{"tag": "hr"}, {"tag": "action", "actions": actions}]
 
     return {
         "header": {
             "title": {"tag": "plain_text", "content": f"{emoji} AIOps 告警通知"},
             "template": "red" if alert.severity in ("disaster", "high") else "orange",
         },
-        "elements": [
-            *_alert_header_elements(alert),
-            {"tag": "hr"},
-            ai_section,
-            {"tag": "hr"},
-            trace_section,
-            {"tag": "hr"},
-            {"tag": "action", "actions": actions},
-        ],
+        "elements": elements,
     }
 
 
@@ -231,16 +267,18 @@ async def send_feishu_alert_with_agent(
     agent_output_json: str,
     policy_result_json: str = "{}",
 ) -> str:
-    """推送带 ReAct agent 诊断结果的卡片
-
-    policy_result_json: 占位参数，Task 9 会真正用它在卡片上加 policy 决策标签
-    """
-    _ = policy_result_json  # Task 9 实装；现在保留参数兼容 workflow 调用
+    """推送带 ReAct agent 诊断结果 + Policy 决策标签的卡片"""
     alert = Alert.model_validate_json(alert_json)
     agent_output = json.loads(agent_output_json)
     plan = agent_output.get("plan") or {}
     trace = agent_output.get("trace") or []
-    card = build_feishu_card_with_agent(alert, workflow_id, plan, trace)
+    try:
+        policy = json.loads(policy_result_json) if policy_result_json else {}
+    except json.JSONDecodeError:
+        policy = {}
+    if not isinstance(policy, dict):
+        policy = {}
+    card = build_feishu_card_with_agent(alert, workflow_id, plan, trace, policy)
     return await _post_im_message(msg_type="interactive", content=card)
 
 

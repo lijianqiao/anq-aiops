@@ -81,6 +81,7 @@ services:
     volumes:
       - ./src:/app/src
       - ./ansible:/app/ansible
+      - ./skills:/app/skills
       # SSH key 挂进容器，让 ansible 能免密登录目标主机
       - /opt/aiops/ssh-keys:/root/.ssh:ro
     healthcheck:

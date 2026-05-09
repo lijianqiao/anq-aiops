@@ -10,6 +10,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
+from typing import Any
 
 import redis.asyncio as aioredis
 from fastapi import FastAPI
@@ -43,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    redis_client = aioredis.from_url(settings.redis_url)
+    redis_client = aioredis.from_url(settings.redis_url, max_connections=20)
     app.state.redis = redis_client
 
     temporal_client = await Client.connect(settings.temporal_address)
@@ -115,6 +116,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     from src.bus.consumer import start_consumer_loop
 
     consumer_task = asyncio.create_task(start_consumer_loop(app))
+    app.state.consumer_task = consumer_task
 
     # 飞书长连接监听（卡片审批回调）。daemon thread，进程退出自动结束。
     # 没配 App ID/Secret 时直接跳过，方便本地起服务跑非飞书功能。
@@ -141,3 +143,36 @@ app.include_router(webhook_router)
 @app.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/health/deep")
+async def health_deep() -> dict[str, Any]:
+    """深度健康检查：consumer 存活、Redis stream 积压、各组件状态"""
+    checks: dict[str, Any] = {}
+    healthy = True
+
+    # consumer loop 存活
+    consumer_task: asyncio.Task | None = getattr(app.state, "consumer_task", None)
+    if consumer_task is not None:
+        checks["consumer_alive"] = not consumer_task.done()
+        if consumer_task.done():
+            healthy = False
+    else:
+        checks["consumer_alive"] = False
+        healthy = False
+
+    # Redis stream 积压
+    redis_client: aioredis.Redis | None = getattr(app.state, "redis", None)
+    if redis_client is not None:
+        try:
+            pending = await redis_client.xpending("aiops:alerts", "aiops-workers")
+            checks["stream_pending"] = pending.get("pending", 0) if isinstance(pending, dict) else 0
+        except Exception:
+            checks["stream_pending"] = "error"
+            healthy = False
+    else:
+        checks["redis"] = "not_connected"
+        healthy = False
+
+    checks["status"] = "ok" if healthy else "degraded"
+    return checks

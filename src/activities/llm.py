@@ -19,6 +19,7 @@ from temporalio import activity
 from src.hermes import knowledge as hermes_knowledge
 from src.hermes.feedback import FeedbackRepository
 from src.hermes.repository import AuditRepository
+from src.hermes.skill_loader import format_skills_for_prompt, load_skills, match_skills
 from src.llm.agent import AgentLimitExceeded
 from src.llm.router import LLMRouter, LLMUnavailable
 from src.models import Alert
@@ -65,14 +66,28 @@ async def agent_diagnose(alert_json: str) -> str:
             logger.warning(f"Hermes 反例查询失败，继续无反例诊断：{exc}")
             negative_cases_text = ""
 
+    # 加载 Skills 并匹配当前告警
+    skills_text = ""
+    try:
+        all_skills = load_skills()
+        if all_skills:
+            alert_dict = alert.model_dump()
+            matched = match_skills(alert_dict, all_skills)
+            if matched:
+                skills_text = format_skills_for_prompt(matched)
+                logger.info(f"Skills 为告警 {alert.event_id} 匹配到 {len(matched)} 个 Skill")
+    except Exception as exc:
+        logger.warning(f"Skills 加载/匹配失败，继续无 Skills 诊断：{exc}")
+
     try:
         result = await llm_router.diagnose_with_agent(
             alert,
             max_turns=5,
             past_cases_text=past_cases_text,
             negative_cases_text=negative_cases_text,
+            skills_text=skills_text,
         )
-    except AgentLimitExceeded, LLMUnavailable:
+    except (AgentLimitExceeded, LLMUnavailable):
         # 让 workflow 走 fallback（关键词匹配）路径
         return json.dumps({"plan": None, "trace": [], "agent_failed": True})
     except Exception as exc:  # noqa: BLE001

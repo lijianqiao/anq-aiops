@@ -22,5 +22,5 @@ async def produce_alert(client: aioredis.Redis, alert: Alert) -> str | None:
     if not is_new:
         return None
     data = alert.model_dump_json()
-    msg_id = await client.xadd(STREAM_KEY, {"data": data})
+    msg_id = await client.xadd(STREAM_KEY, {"data": data}, maxlen=10000)
     return cast(str, msg_id)

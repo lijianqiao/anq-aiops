@@ -53,6 +53,15 @@ SYSTEM_PROMPT = """你是 AIOps 诊断 Agent。收到告警后，你的目标是
 最多调 5 轮，所以工具调用要精准——每次工具调用都要服务于决策。
 """
 
+SKILLS_SECTION_TEMPLATE = """
+
+## Matched Skills（自动匹配的 SOP）
+
+以下是与本次告警匹配的历史 SOP，可作为诊断参考。实际处置方案仍以诊断工具收集到的事实为准。
+
+{skills_text}
+"""
+
 PAST_CASES_SECTION_TEMPLATE = """
 
 ## Past Experiences（Hermes 知识层）
@@ -125,12 +134,14 @@ class DiagnosticAgent:
         timeout_per_call: float = 60,
         past_cases_text: str = "",
         negative_cases_text: str = "",
+        skills_text: str = "",
     ) -> None:
         self.llm = llm_client
         self.max_turns = max_turns
         self.timeout_per_call = timeout_per_call
         self.past_cases_text = past_cases_text
         self.negative_cases_text = negative_cases_text
+        self.skills_text = skills_text
 
     async def diagnose(self, alert: Alert) -> AgentResult:
         messages: list[dict[str, Any]] = [
@@ -194,14 +205,21 @@ class DiagnosticAgent:
         raise AgentLimitExceeded(f"agent did not converge in {self.max_turns} turns")
 
     def _system_prompt(self) -> str:
-        """返回带 Hermes 历史案例的 system prompt。"""
-        if not self.past_cases_text.strip() and not self.negative_cases_text.strip():
-            return SYSTEM_PROMPT
-        past_section = PAST_CASES_SECTION_TEMPLATE.format(
-            past_cases_text=self.past_cases_text or "未找到历史相似案例。",
-            negative_cases_text=self.negative_cases_text or "未找到人工标注反例。",
-        )
-        return f"{SYSTEM_PROMPT.rstrip()}\n{past_section}"
+        """返回带 Skills + Hermes 历史案例的 system prompt。"""
+        parts = [SYSTEM_PROMPT.rstrip()]
+
+        if self.skills_text.strip():
+            parts.append(SKILLS_SECTION_TEMPLATE.format(skills_text=self.skills_text))
+
+        if self.past_cases_text.strip() or self.negative_cases_text.strip():
+            parts.append(
+                PAST_CASES_SECTION_TEMPLATE.format(
+                    past_cases_text=self.past_cases_text or "未找到历史相似案例。",
+                    negative_cases_text=self.negative_cases_text or "未找到人工标注反例。",
+                )
+            )
+
+        return "\n".join(parts)
 
 
 def _build_result(propose_args: dict[str, Any], trace: list[dict[str, Any]]) -> AgentResult:

@@ -32,7 +32,7 @@ async def correlate(alert: Alert, store: GroupStore) -> AlertGroup:
 async def _acquire_correlation_lock(store: GroupStore, target: str) -> str | None:
     """短暂等待同 host 关联锁，避免多 consumer 同时创建根因组。"""
     for _ in range(20):
-        token = await acquire_action_mutex(store.redis, target, ttl=10)
+        token = await acquire_action_mutex(store.redis, target, ttl=60)
         if token is not None:
             return token
         await asyncio.sleep(0.05)

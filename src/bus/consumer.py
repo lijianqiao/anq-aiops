@@ -27,7 +27,9 @@ logger = logging.getLogger(__name__)
 
 def _decode_message_id(msg_id: str | bytes) -> str:
     """Redis 返回 bytes 时统一解码为字符串，便于后续 ack 与 workflow 记录。"""
-    return msg_id.decode("utf-8") if isinstance(msg_id, bytes) else msg_id
+    if isinstance(msg_id, bytes):
+        return msg_id.decode("utf-8")
+    return str(msg_id)
 
 
 async def consume_alert(

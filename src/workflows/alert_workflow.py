@@ -203,7 +203,7 @@ class AlertWorkflow:
         mutex_target = f"host:{alert['host_ip']}"
         mutex_token = await workflow.execute_activity(
             "try_acquire_mutex",
-            args=[mutex_target, 600],
+            args=[mutex_target, 900],
             start_to_close_timeout=timedelta(seconds=10),
             retry_policy=RetryPolicy(maximum_attempts=2),
         )
@@ -224,12 +224,28 @@ class AlertWorkflow:
             return "skipped_mutex"
 
         try:
-            exec_result_json = await workflow.execute_activity(
-                "execute_runbook",
-                args=[runbook_id, runbook_params],
-                start_to_close_timeout=timedelta(minutes=10),
-                retry_policy=RetryPolicy(maximum_attempts=1),
-            )
+            try:
+                exec_result_json = await workflow.execute_activity(
+                    "execute_runbook",
+                    args=[runbook_id, runbook_params],
+                    start_to_close_timeout=timedelta(minutes=10),
+                    retry_policy=RetryPolicy(maximum_attempts=1),
+                )
+            except Exception as runbook_exc:
+                workflow.logger.error(f"execute_runbook failed: {runbook_exc}")
+                await workflow.execute_activity(
+                    "write_audit",
+                    args=[alert_json, workflow_id, "error", runbook_id, runbook_params, None, feishu_msg_id],
+                    start_to_close_timeout=timedelta(seconds=10),
+                    retry_policy=_NOTIFY_RETRY,
+                )
+                await workflow.execute_activity(
+                    "send_feishu_result",
+                    args=[f"💥 告警 {event_id} Runbook 执行异常：{runbook_exc}"],
+                    start_to_close_timeout=timedelta(seconds=10),
+                    retry_policy=_NOTIFY_RETRY,
+                )
+                return "error"
         finally:
             await workflow.execute_activity(
                 "release_mutex",

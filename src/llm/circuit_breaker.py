@@ -1,3 +1,4 @@
+import asyncio
 import time
 
 
@@ -16,34 +17,38 @@ class CircuitBreaker:
         self._failures = 0
         self._opened_at = 0.0
         self._window_started_at = time.time()
+        self._lock = asyncio.Lock()
 
-    def check(self) -> None:
-        if self.state == "CLOSED":
-            return
-        if self.state == "OPEN":
-            if time.time() - self._opened_at >= self.window_sec:
-                self.state = "HALF_OPEN"
+    async def check(self) -> None:
+        async with self._lock:
+            if self.state == "CLOSED":
                 return
-            raise CircuitBreakerOpen("Circuit breaker is OPEN")
-        # HALF_OPEN: 允许一次试探
-        return
-
-    def record_success(self) -> None:
-        if self.state == "HALF_OPEN":
-            self._reset()
+            if self.state == "OPEN":
+                if time.time() - self._opened_at >= self.window_sec:
+                    self.state = "HALF_OPEN"
+                    return
+                raise CircuitBreakerOpen("Circuit breaker is OPEN")
+            # HALF_OPEN: 允许一次试探
             return
-        self._reset_closed_window_if_expired()
-        self._successes += 1
 
-    def record_failure(self) -> None:
-        if self.state == "HALF_OPEN":
-            self._trip()
-            return
-        self._reset_closed_window_if_expired()
-        self._failures += 1
-        total = self._successes + self._failures
-        if total >= 3 and self._failures / total > self.threshold:
-            self._trip()
+    async def record_success(self) -> None:
+        async with self._lock:
+            if self.state == "HALF_OPEN":
+                self._reset()
+                return
+            self._reset_closed_window_if_expired()
+            self._successes += 1
+
+    async def record_failure(self) -> None:
+        async with self._lock:
+            if self.state == "HALF_OPEN":
+                self._trip()
+                return
+            self._reset_closed_window_if_expired()
+            self._failures += 1
+            total = self._successes + self._failures
+            if total >= 3 and self._failures / total > self.threshold:
+                self._trip()
 
     def _trip(self) -> None:
         self.state = "OPEN"

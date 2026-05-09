@@ -6,10 +6,12 @@
 @Docs: 测试飞书告警卡片内容、Policy 标签和拒绝原因表单
 """
 
+import concurrent.futures
 from datetime import datetime
 from typing import Any
 
 from src.activities.feishu import build_feishu_card, build_feishu_card_with_agent
+from src.feishu_listener import _build_card_action_handler
 from src.models import Alert
 
 
@@ -153,6 +155,42 @@ def test_card_shows_deny_label_no_buttons():
     assert "按建议执行" not in s
 
 
+def test_card_action_signal_failure_returns_error_toast(monkeypatch):
+    """Temporal signal 发送失败时，不应向用户返回成功提示。"""
+    future: concurrent.futures.Future[None] = concurrent.futures.Future()
+    future.set_exception(RuntimeError("workflow not found"))
+
+    def fake_run_coroutine_threadsafe(coro, loop):
+        coro.close()
+        return future
+
+    monkeypatch.setattr("asyncio.run_coroutine_threadsafe", fake_run_coroutine_threadsafe)
+    handler = _build_card_action_handler(object(), object(), _FakeCardActionResponse)
+
+    response = handler(_FakeCardActionData("wf-missing", "approve"))
+
+    assert response.body["toast"]["type"] == "error"
+    assert "workflow not found" in response.body["toast"]["content"]
+
+
+def test_card_action_signal_timeout_cancels_future(monkeypatch):
+    """Temporal signal 等待超时时，应取消 future 并返回错误提示。"""
+    future = _TimeoutFuture()
+
+    def fake_run_coroutine_threadsafe(coro, loop):
+        coro.close()
+        return future
+
+    monkeypatch.setattr("asyncio.run_coroutine_threadsafe", fake_run_coroutine_threadsafe)
+    handler = _build_card_action_handler(object(), object(), _FakeCardActionResponse)
+
+    response = handler(_FakeCardActionData("wf-timeout", "approve"))
+
+    assert future.cancelled
+    assert response.body["toast"]["type"] == "error"
+    assert "处理超时" in response.body["toast"]["content"]
+
+
 def _action_tags(card: dict[str, Any]) -> set[str]:
     """返回所有 action block 内的 tag，防止把 form/input 放进 actions。"""
     tags: set[str] = set()
@@ -160,3 +198,52 @@ def _action_tags(card: dict[str, Any]) -> set[str]:
         if element.get("tag") == "action":
             tags.update(str(action.get("tag")) for action in element.get("actions", []))
     return tags
+
+
+class _FakeCardActionResponse:
+    """保存飞书回调响应体，便于断言 toast 内容。"""
+
+    def __init__(self, body: dict[str, Any]) -> None:
+        self.body = body
+
+
+class _FakeCardActionData:
+    """构造飞书卡片回调数据。"""
+
+    def __init__(self, workflow_id: str, action: str) -> None:
+        self.event = _FakeEvent(workflow_id, action)
+
+
+class _FakeEvent:
+    """构造飞书事件对象。"""
+
+    def __init__(self, workflow_id: str, action: str) -> None:
+        self.action = _FakeAction(workflow_id, action)
+        self.operator = _FakeOperator()
+
+
+class _FakeAction:
+    """构造飞书卡片 action 对象。"""
+
+    def __init__(self, workflow_id: str, action: str) -> None:
+        self.value = {"workflow_id": workflow_id, "action": action}
+        self.form_value: dict[str, str] = {}
+
+
+class _FakeOperator:
+    """构造飞书操作者对象。"""
+
+    open_id = "ou_test"
+    user_id = "user_test"
+
+
+class _TimeoutFuture:
+    """模拟跨线程 future 等待超时。"""
+
+    cancelled = False
+
+    def result(self, timeout: int) -> None:
+        raise concurrent.futures.TimeoutError
+
+    def cancel(self) -> None:
+        self.cancelled = True

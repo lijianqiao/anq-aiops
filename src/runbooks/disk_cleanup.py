@@ -25,6 +25,17 @@ class DiskCleanupParams(BaseModel):
     path: str = Field(default="/tmp", pattern=_PATH_RE)
     min_age_days: int = Field(default=7, ge=1, le=365)
 
+    @classmethod
+    def _validate_path(cls, v: str) -> str:
+        if ".." in v:
+            raise ValueError("路径不允许包含 '..' 遍历")
+        return v
+
+    def __init__(self, **data: Any) -> None:
+        if "path" in data:
+            self._validate_path(data["path"])
+        super().__init__(**data)
+
 
 class DiskCleanupRunbook(BaseRunbook):
     """清理目标主机上指定路径下的过期文件"""

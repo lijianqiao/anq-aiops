@@ -21,7 +21,7 @@ from src.sop.skill_template import SkillCandidate, render_skill_md
 logger = logging.getLogger(__name__)
 _repo: AuditRepository | None = None
 _MAX_CANDIDATES_PER_DAY = 5
-SOP_ROOT = Path("docs/sop")
+SOP_ROOT = Path("skills")
 _SAFE_SLUG = re.compile(r"[^a-z0-9_-]+")
 
 
@@ -36,6 +36,7 @@ class _SkillOut(BaseModel):
     procedure: list[str] = []
     pitfalls: list[str] = []
     verification: list[str] = []
+    triggers: dict[str, list[str]] | None = None
 
 
 def set_repo(repo: AuditRepository | None) -> None:
@@ -82,7 +83,10 @@ Runbook: {runbook_id}
 成功样本:
 {samples_text}
 
-返回 JSON，字段为 name、description、category、when_to_use、quick_ref、procedure、pitfalls、verification。
+返回 JSON，字段为 name、description、category、when_to_use、quick_ref、procedure、pitfalls、verification、triggers。
+triggers 是一个 dict，包含：
+- event_patterns: 用于匹配告警的关键词/正则列表（从 event_keyword 和样本中提炼）
+- severity: 匹配的严重级别列表（如 ["high", "disaster"]，根据案例推断）
 """
     result = cast(_SkillOut, await llm_activities.llm_router.invoke(prompt, _SkillOut))
     return SkillCandidate(**result.model_dump())
@@ -114,6 +118,9 @@ async def generate_sop_candidates() -> list[str]:
                 str(candidate["event_keyword"]),
                 [dict(row) for row in rows],
             )
+            # 确保 triggers 始终有值，LLM 未返回时用 event_keyword 兜底
+            if not skill.triggers:
+                skill.triggers = {"event_patterns": [str(candidate["event_keyword"])]}
             markdown = render_skill_md(skill, sample_count=int(candidate["success_count"]))
             category = _slugify(skill.category, fallback="devops")
             name = _slugify(skill.name, fallback="sop")

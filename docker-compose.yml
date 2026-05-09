@@ -83,6 +83,12 @@ services:
       - ./ansible:/app/ansible
       # SSH key 挂进容器，让 ansible 能免密登录目标主机
       - /opt/aiops/ssh-keys:/root/.ssh:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/deep')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
 
   meta-monitor:
     build:
@@ -99,6 +105,11 @@ services:
       - "host.docker.internal:host-gateway"
     # 故意不加 depends_on：meta-monitor 应先于主应用发现故障，而不是等待主应用健康。
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
 volumes:
   pgdata:

@@ -22,11 +22,13 @@ class SkillCandidate:
     procedure: list[str]
     pitfalls: list[str]
     verification: list[str]
+    triggers: dict[str, list[str]] | None = None
 
 
 def render_skill_md(candidate: SkillCandidate, sample_count: int) -> str:
     """渲染 SOP Markdown。"""
     today = datetime.now(UTC).strftime("%Y-%m-%d")
+    triggers_block = _render_triggers(candidate.triggers) if candidate.triggers else ""
     return f"""---
 name: {candidate.name}
 description: {candidate.description}
@@ -39,7 +41,7 @@ metadata:
     auto_generated: true
     generated_at: {today}
     sample_count: {sample_count}
----
+{triggers_block}---
 
 ## When to use
 
@@ -76,3 +78,19 @@ def _bullets(items: list[str]) -> str:
 def _numbered(items: list[str]) -> str:
     """渲染有序列表。"""
     return "\n".join(f"{index + 1}. {item}" for index, item in enumerate(items)) if items else "_无_"
+
+
+def _render_triggers(triggers: dict[str, list[str]]) -> str:
+    """渲染 triggers 块为 YAML frontmatter 片段。"""
+    if not triggers:
+        return ""
+    lines = ["triggers:"]
+    for key, values in triggers.items():
+        if values:
+            lines.append(f"  {key}: {_to_inline_list(values)}")
+    return "\n".join(lines) + "\n"
+
+
+def _to_inline_list(items: list[str]) -> str:
+    """将列表渲染为 YAML 内联列表。"""
+    return "[" + ", ".join(f'"{item}"' for item in items) + "]"

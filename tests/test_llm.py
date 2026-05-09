@@ -139,63 +139,69 @@ def test_circuit_breaker_initial_state():
     assert cb.state == "CLOSED"
 
 
-def test_circuit_breaker_records_failure():
+@pytest.mark.asyncio
+async def test_circuit_breaker_records_failure():
     cb = CircuitBreaker(threshold=0.5, window_sec=60)
-    cb.record_failure()
-    cb.record_failure()
+    await cb.record_failure()
+    await cb.record_failure()
     assert cb.state == "CLOSED"
 
 
-def test_circuit_breaker_opens_on_threshold():
+@pytest.mark.asyncio
+async def test_circuit_breaker_opens_on_threshold():
     cb = CircuitBreaker(threshold=0.5, window_sec=60)
-    cb.record_success()
-    cb.record_failure()
-    cb.record_failure()
+    await cb.record_success()
+    await cb.record_failure()
+    await cb.record_failure()
     assert cb.state == "OPEN"
 
 
-def test_circuit_breaker_blocks_when_open():
+@pytest.mark.asyncio
+async def test_circuit_breaker_blocks_when_open():
     cb = CircuitBreaker(threshold=0.5, window_sec=60)
-    cb.record_success()
-    cb.record_failure()
-    cb.record_failure()
+    await cb.record_success()
+    await cb.record_failure()
+    await cb.record_failure()
     assert cb.state == "OPEN"
     with pytest.raises(CircuitBreakerOpen):
-        cb.check()
+        await cb.check()
 
 
-def test_circuit_breaker_half_open_after_window():
+@pytest.mark.asyncio
+async def test_circuit_breaker_half_open_after_window():
     cb = CircuitBreaker(threshold=0.5, window_sec=1)
-    cb.record_success()
-    cb.record_failure()
-    cb.record_failure()
+    await cb.record_success()
+    await cb.record_failure()
+    await cb.record_failure()
     assert cb.state == "OPEN"
     time.sleep(1.1)
-    cb.check()
+    await cb.check()
     assert cb.state == "HALF_OPEN"
 
 
-def test_circuit_breaker_resets_on_success():
+@pytest.mark.asyncio
+async def test_circuit_breaker_resets_on_success():
     cb = CircuitBreaker(threshold=0.5, window_sec=1)
-    cb.record_success()
-    cb.record_failure()
-    cb.record_failure()
+    await cb.record_success()
+    await cb.record_failure()
+    await cb.record_failure()
     assert cb.state == "OPEN"
     time.sleep(1.1)
-    cb.check()
-    cb.record_success()
+    await cb.check()
+    await cb.record_success()
     assert cb.state == "CLOSED"
 
 
-def test_circuit_breaker_closed_counts_reset_after_window():
+@pytest.mark.asyncio
+async def test_circuit_breaker_closed_counts_reset_after_window():
     cb = CircuitBreaker(threshold=0.5, window_sec=1)
-    cb.record_success()
-    cb.record_success()
+    await cb.record_success()
+    await cb.record_success()
     time.sleep(1.1)
-    cb.record_failure()
-    cb.record_failure()
+    await cb.record_failure()
+    await cb.record_failure()
     assert cb.state == "CLOSED"
-    cb.record_failure()
+    await cb.record_failure()
     assert cb.state == "OPEN"
 
 
@@ -261,9 +267,9 @@ async def test_router_skips_primary_when_circuit_open():
     fallback.chat_json.return_value = SampleResponse(answer="fallback", score=0.5)
 
     cb = CircuitBreaker(threshold=0.5, window_sec=60)
-    cb.record_success()
-    cb.record_failure()
-    cb.record_failure()
+    await cb.record_success()
+    await cb.record_failure()
+    await cb.record_failure()
     assert cb.state == "OPEN"
 
     router = LLMRouter(primary=primary, fallback=fallback, circuit_breaker=cb)
@@ -297,8 +303,8 @@ async def test_router_agent_failure_records_circuit_breaker_and_skips_primary_af
     fallback = AsyncMock(spec=LLMClient)
     fallback.chat_with_tools.return_value = {"content": None, "tool_calls": [_propose_tool_call()]}
     cb = CircuitBreaker(threshold=0.3, window_sec=60)
-    cb.record_success()
-    cb.record_success()
+    await cb.record_success()
+    await cb.record_success()
 
     router = LLMRouter(primary=primary, fallback=fallback, circuit_breaker=cb)
     first_result = await router.diagnose_with_agent(_agent_alert())
